@@ -282,41 +282,66 @@ def scan_strategy_3_fundamental():
         send_tg(f"❌ 策略三執行錯誤: {e}")
 
 # ==========================================
-# 🏁 程式進入點（全自動通吃版）
+# 🏁 程式進入點（全面加強防禦防撞牆版）
 # ==========================================
 if __name__ == "__main__":
-    # 如果有帶參數，就單獨跑該策略 (保留原本的手動彈性)
+    import sys
+    
+    # 如果有帶參數，就單獨跑該策略
     if len(sys.argv) >= 2:
         mode = sys.argv[1]
         if mode == "strategy_1":
-            scan_strategy_1_breakout()
+            try:
+                scan_strategy_1_breakout()
+            except Exception as e:
+                print(f"❌ 策略一執行錯誤: {e}")
+                send_tg(f"❌ 策略一執行錯誤: {e}")
         elif mode == "strategy_2":
-            scan_strategy_2_chips()
+            try:
+                scan_strategy_2_chips()
+            except Exception as e:
+                print(f"❌ 策略二執行錯誤: {e}")
+                send_tg(f"❌ 策略二執行錯誤: {e}")
         elif mode == "strategy_3":
-            scan_strategy_3_fundamental()
-            
-    # 🔥 重點：如果不帶參數，直接全自動「三個策略連發」！
+            try:
+                scan_strategy_3_fundamental()
+            except Exception as e:
+                print(f"❌ 策略三執行錯誤: {e}")
+                send_tg(f"❌ 策略三執行錯誤: {e}")
+                
+    # 如果手動執行 "all" 或是不帶參數（一鍵連發）
     else:
         print("🤖 啟動全自動排程模式：開始連續執行三個策略...")
         
+        # 執行策略一
         try:
+            print("⏳ 正在執行策略一...")
             scan_strategy_1_breakout()
         except Exception as e:
-            print(f"⚠️ 策略一自動執行失敗: {e}")
+            error_msg = f"❌ 策略一執行中斷錯誤: {e}"
+            print(error_msg)
+            send_tg(error_msg)
             
-        # 稍微歇個 3 秒，避免 Telegram 訊息發送太快被阻擋
-        time.sleep(3) 
+        time.sleep(5) 
         
+        # 執行策略二
         try:
+            print("⏳ 正在執行策略二...")
             scan_strategy_2_chips()
         except Exception as e:
-            print(f"⚠️ 策略二自動執行失敗: {e}")
+            error_msg = f"❌ 策略二執行中斷錯誤: {e}"
+            print(error_msg)
+            send_tg(error_msg)
             
-        time.sleep(3)
+        time.sleep(5)
         
+        # 執行策略三
         try:
+            print("⏳ 正在執行策略三...")
             scan_strategy_3_fundamental()
         except Exception as e:
-            print(f"⚠️ 策略三自動執行失敗: {e}")
+            error_msg = f"❌ 策略三執行中斷錯誤: {e}"
+            print(error_msg)
+            send_tg(error_msg)
             
-        print("✨ 三大策略已全數掃描並自動發送至 Telegram 完成！")
+        print("✨ 流程執行完畢。")
