@@ -86,42 +86,75 @@ def scan_strategy_1_breakout():
 def scan_strategy_2_chips():
     print("📊 啟動 [策略二：全市場法人籌碼跟單掃描]...")
     api = get_api()
-    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    # 抓取過去 5 天的籌碼資料來判斷連續買超
-    start_date = (datetime.datetime.now() - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
+    
+    # 取得今天與 10 天前的日期字串
+    today_dt = datetime.datetime.now()
+    today_str = today_dt.strftime("%Y-%m-%d")
+    start_date = (today_dt - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
     
     try:
-        # 獲取全市場三大法人買賣超資料
+        print(f"1. 開始下載從 {start_date} 到 {today_str} 的全市場法人籌碼資料...")
         df_chips = api.taiwan_stock_institutional_investors_buy_sell(start_date=start_date)
+        
         if df_chips.empty:
-            send_tg("⚠️ 【策略二失敗】下午五點前法人籌碼資料可能尚未完全更新。")
+            print("⚠️ 警告：無法取得任何法人籌碼資料。")
+            send_tg("⚠️ 【策略二通知】目前無法取得法人籌碼資料，請稍後再試。")
             return
             
-        # 過濾出三大法人個股當日狀況
-        # 邏輯：彙整當日「投信」與「外資」買超金額/張數排行
-        df_today = df_chips[df_chips["date"] == today_str]
+        print(f"2. 資料下載成功！總共 {len(df_chips)} 筆。開始確認最新資料日期...")
         
-        # 篩選投信今日買超前 5 名
+        # 核心防護：找出這份籌碼資料庫裡最新的日期是什麼時候 (如果是下午 3 點，最新通常是昨天)
+        available_dates = sorted(df_chips["date"].unique(), reverse=True)
+        latest_available_date = available_dates[0]
+        
+        print(f"💡 資料庫最新可用日期為: {latest_available_date}")
+        
+        # 篩選出最新那一天的籌碼
+        df_today = df_chips[df_chips["date"] == latest_available_date]
+        
+        # 3. 篩選投信與外資買超排行 (單位：股數，轉為張數)
+        print("3. 開始計算投信與外資買超排行...")
+        
+        # 投信
         investment_trust = df_today[df_today["name"] == "Investment_Trust"]
         top_it = investment_trust.sort_values(by="buy", ascending=False).head(5)
         
-        # 篩選外資今日買超前 5 名
+        # 外資
         foreign_investor = df_today[df_today["name"] == "Foreign_Investor"]
         top_fi = foreign_investor.sort_values(by="buy", ascending=False).head(5)
         
-        msg = f"📊 *【策略二：盤後法人籌碼跟單】* ({today_str})\n"
-        msg += "🎯 *今日「投信」力挺買超前五名：*\n"
-        for _, row in top_it.iterrows():
-            # buy 的單位通常是股數，除以 1000 換算成張數
-            msg += f"▪️ `{row['stock_id']}`：買超 {int(row['buy']/1000)} 張 | 賣超 {int(row['sell']/1000)} 張\n"
+        # 4. 組裝 Telegram 訊息
+        msg = f"📊 *【策略二：盤後法人籌碼跟單】*\n"
+        msg += f"📅 籌碼日期：`{latest_available_date}`\n"
+        if latest_available_date != today_str:
+            msg += f"⚠️ *備註*：今日最新籌碼尚未公佈，自動顯示前一交易日資料。\n"
+        msg += "------------------------\n\n"
+        
+        msg += "🎯 *投信力挺買超前五名：*\n"
+        if not top_it.empty:
+            for _, row in top_it.iterrows():
+                msg += f"▪️ `{row['stock_id']}`：買超 {int(row['buy']/1000)} 張 | 賣超 {int(row['sell']/1000)} 張\n"
+        else:
+            msg += "暫無資料\n"
             
-        msg += "\n👽 *今日「外資」現蹤買超前五名：*\n"
-        for _, row in top_fi.iterrows():
-            msg += f"▪️ `{row['stock_id']}`：買超 {int(row['buy']/1000)} 張 | 賣超 {int(row['sell']/1000)} 張\n"
+        msg += "\n👽 *外資現蹤買超前五名：*\n"
+        if not top_fi.empty:
+            for _, row in top_fi.iterrows():
+                msg += f"▪️ `{row['stock_id']}`：買超 {int(row['buy']/1000)} 張 | 賣超 {int(row['sell']/1000)} 張\n"
+        else:
+            msg += "暫無資料\n"
             
         msg += "\n💡 *提示*：中小型股跟著「投信作帳」走，通常波段勝率較高。"
-        send_tg(msg)
+        
+        print("4. 嘗試發送訊息至 Telegram...")
+        success = send_tg(msg)
+        if success:
+            print("✨ Telegram 訊息發送成功！")
+        else:
+            print("❌ Telegram 訊息發送失敗，請檢查 Token 與 Chat ID。")
+            
     except Exception as e:
+        print(f"❌ 策略二執行時發生重大錯誤: {e}")
         send_tg(f"❌ 策略二執行錯誤: {e}")
 
 # ==========================================
