@@ -81,20 +81,20 @@ def scan_strategy_1_breakout():
         send_tg(f"❌ 策略一執行錯誤: {e}")
 
 # ==========================================
-# 📊 策略二：全市場法人籌碼跟單掃描 (建議傍晚 17:00 執行)
+# 📊 策略二：全市場法人籌碼跟單掃描
 # ==========================================
 def scan_strategy_2_chips():
     print("📊 啟動 [策略二：全市場法人籌碼跟單掃描]...")
     api = get_api()
     
-    # 取得今天與 10 天前的日期字串
     today_dt = datetime.datetime.now()
     today_str = today_dt.strftime("%Y-%m-%d")
     start_date = (today_dt - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
     
     try:
         print(f"1. 開始下載從 {start_date} 到 {today_str} 的全市場法人籌碼資料...")
-        df_chips = api.taiwan_stock_institutional_investors_buy_sell(start_date=start_date)
+        # 修正：正確的函數名稱是 taiwan_stock_institutional_investors
+        df_chips = api.taiwan_stock_institutional_investors(start_date=start_date)
         
         if df_chips.empty:
             print("⚠️ 警告：無法取得任何法人籌碼資料。")
@@ -103,27 +103,24 @@ def scan_strategy_2_chips():
             
         print(f"2. 資料下載成功！總共 {len(df_chips)} 筆。開始確認最新資料日期...")
         
-        # 核心防護：找出這份籌碼資料庫裡最新的日期是什麼時候 (如果是下午 3 點，最新通常是昨天)
         available_dates = sorted(df_chips["date"].unique(), reverse=True)
         latest_available_date = available_dates[0]
         
         print(f"💡 資料庫最新可用日期為: {latest_available_date}")
         
-        # 篩選出最新那一天的籌碼
         df_today = df_chips[df_chips["date"] == latest_available_date]
         
-        # 3. 篩選投信與外資買超排行 (單位：股數，轉為張數)
         print("3. 開始計算投信與外資買超排行...")
+        # 修正：FinMind 的身分名稱通常是全小寫，例如 'investment_trust' 與 'foreign_investor'
+        # 為了保險起見，我們用 .str.lower() 來做比對
+        df_today["name"] = df_today["name"].str.lower()
         
-        # 投信
-        investment_trust = df_today[df_today["name"] == "Investment_Trust"]
+        investment_trust = df_today[df_today["name"] == "investment_trust"]
         top_it = investment_trust.sort_values(by="buy", ascending=False).head(5)
         
-        # 外資
-        foreign_investor = df_today[df_today["name"] == "Foreign_Investor"]
+        foreign_investor = df_today[df_today["name"] == "foreign_investor"]
         top_fi = foreign_investor.sort_values(by="buy", ascending=False).head(5)
         
-        # 4. 組裝 Telegram 訊息
         msg = f"📊 *【策略二：盤後法人籌碼跟單】*\n"
         msg += f"📅 籌碼日期：`{latest_available_date}`\n"
         if latest_available_date != today_str:
@@ -151,36 +148,30 @@ def scan_strategy_2_chips():
         if success:
             print("✨ Telegram 訊息發送成功！")
         else:
-            print("❌ Telegram 訊息發送失敗，請檢查 Token 與 Chat ID。")
+            print("❌ Telegram 訊息發送失敗。")
             
     except Exception as e:
         print(f"❌ 策略二執行時發生重大錯誤: {e}")
         send_tg(f"❌ 策略二執行錯誤: {e}")
 
 # ==========================================
-# 📑 策略三：定期基本面營收雙增篩選 (建議每週六執行)
+# 📑 策略三：定期基本面營收雙增篩選
 # ==========================================
 def scan_strategy_3_fundamental():
     print("📑 啟動 [策略三：定期基本面營收雙增篩選]...")
     api = get_api()
-    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    # 營收按月公布，抓過去 2 個月的資料來進行比對
     start_date = (datetime.datetime.now() - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
     
     try:
-        # 注意：全市場月營收資料量大，這裡我們隨機抽樣或示範邏輯
-        # 實務上可以針對特定的熱門股清單，或者直接撈取最新月份營收
+        # 修正：正確的函數名稱是 taiwan_stock_month_revenue
         df_revenue = api.taiwan_stock_month_revenue(start_date=start_date)
         if df_revenue.empty:
             send_tg("⚠️ 【策略三失敗】無法獲取最新月份營收資料。")
             return
             
-        # 找出最新公佈的月份
         latest_date = df_revenue["date"].max()
-        df_latest = df_revenue[df_revenue["date"] == latest_date]
+        df_latest = df_revenue[df_revenue["date"] == latest_date].copy()
         
-        # 篩選條件：營收月增率 (revenue_month_growth_rate) > 0 且 營收年增率 (revenue_year_growth_rate) > 20%
-        # 並且排除代號非4碼的標的
         df_latest["stock_id"] = df_latest["stock_id"].astype(str)
         growth_stocks = df_latest[
             (df_latest["revenue_month_growth_rate"] > 0) & 
@@ -188,7 +179,6 @@ def scan_strategy_3_fundamental():
             (df_latest["stock_id"].str.len() == 4)
         ]
         
-        # 依照年增率排序取前 8 檔
         top_growth = growth_stocks.sort_values(by="revenue_year_growth_rate", ascending=False).head(8)
         
         msg = f"📑 *【策略三：基本面營收雙增榜】* (資料月份: {latest_date})\n"
@@ -202,7 +192,9 @@ def scan_strategy_3_fundamental():
             
         msg += "\n🍀 適合納入中長線策略的「基本面護身」觀察清單。"
         send_tg(msg)
+        print("✨ 策略三執行完成並發送成功！")
     except Exception as e:
+        print(f"❌ 策略三執行時發生重大錯誤: {e}")
         send_tg(f"❌ 策略三執行錯誤: {e}")
 
 if __name__ == "__main__":
