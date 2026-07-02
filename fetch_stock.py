@@ -2,6 +2,7 @@ import os
 import sys
 import requests
 import datetime
+import time
 import pandas as pd
 from FinMind.data import DataLoader
 
@@ -84,75 +85,106 @@ def scan_strategy_1_breakout():
 # 📊 策略二：全市場法人籌碼跟單掃描
 # ==========================================
 def scan_strategy_2_chips():
-    print("📊 啟動 [策略二：全市場法人籌碼跟單掃描]...")
-    api = get_api()
+    print("📊 啟動 [策略二：全市場動態過濾 - 法人籌碼跟單掃描]...")
     
+    # 1. 呼叫你寫的函數：直接從證交所 API 抓取全台灣最新股票清單
+    all_market_tickers = fetch_all_taiwan_market_tickers()
+    print(f"🌲 證交所動態獲取完成，全市場共 {len(all_market_tickers)} 檔標的。")
+    
+    # 2. 呼叫你寫的函數：利用字首過濾出策略二需要的電子半導體候選股
+    strat2_candidates, _ = fetch_fundamental_snapshot(all_market_tickers)
+    print(f"🔍 經過字首過濾 (23, 24, 30...)，共篩選出 {len(strat2_candidates)} 檔電子焦點股。")
+    
+    api = get_api()
     today_dt = datetime.datetime.now()
     today_str = today_dt.strftime("%Y-%m-%d")
-    start_date = (today_dt - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
+    # 籌碼比對只需要看最近幾天，抓 7 天很安全
+    start_date = (today_dt - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
     
-    try:
-        print(f"1. 開始下載從 {start_date} 到 {today_str} 的全市場法人籌碼資料...")
-        # 修正：正確的函數名稱是 taiwan_stock_institutional_investors
-        df_chips = api.taiwan_stock_institutional_investors(start_date=start_date)
+    it_buyers = []  # 投信買超清單
+    fi_buyers = []  # 外資買超清單
+    latest_date_detected = today_str
+    
+    print(f"🚀 開始逐檔掃描這 {len(strat2_candidates)} 檔股票的 FinMind 法人籌碼 (免費用戶安全版)...")
+    
+    for idx, tk in enumerate(strat2_candidates):
+        # 把 "2330.TW" 轉成 FinMind 要的 "2330"
+        pure_code = tk.split('.')[0]
         
-        if df_chips.empty:
-            print("⚠️ 警告：無法取得任何法人籌碼資料。")
-            send_tg("⚠️ 【策略二通知】目前無法取得法人籌碼資料，請稍後再試。")
-            return
+        # 取得股票名稱（優先從你建立的 DYNAMIC_STOCK_NAMES 字典拿，拿不到就顯示代號）
+        stock_name = DYNAMIC_STOCK_NAMES.get(tk, pure_code)
+        
+        try:
+            # 帶入 stock_id 進行單股查詢，完美繞過免費帳號全市場限制！
+            df_stock_chips = api.taiwan_stock_institutional_investors(
+                stock_id=pure_code, 
+                start_date=start_date
+            )
             
-        print(f"2. 資料下載成功！總共 {len(df_chips)} 筆。開始確認最新資料日期...")
-        
-        available_dates = sorted(df_chips["date"].unique(), reverse=True)
-        latest_available_date = available_dates[0]
-        
-        print(f"💡 資料庫最新可用日期為: {latest_available_date}")
-        
-        df_today = df_chips[df_chips["date"] == latest_available_date]
-        
-        print("3. 開始計算投信與外資買超排行...")
-        # 修正：FinMind 的身分名稱通常是全小寫，例如 'investment_trust' 與 'foreign_investor'
-        # 為了保險起見，我們用 .str.lower() 來做比對
-        df_today["name"] = df_today["name"].str.lower()
-        
-        investment_trust = df_today[df_today["name"] == "investment_trust"]
-        top_it = investment_trust.sort_values(by="buy", ascending=False).head(5)
-        
-        foreign_investor = df_today[df_today["name"] == "foreign_investor"]
-        top_fi = foreign_investor.sort_values(by="buy", ascending=False).head(5)
-        
-        msg = f"📊 *【策略二：盤後法人籌碼跟單】*\n"
-        msg += f"📅 籌碼日期：`{latest_available_date}`\n"
-        if latest_available_date != today_str:
-            msg += f"⚠️ *備註*：今日最新籌碼尚未公佈，自動顯示前一交易日資料。\n"
-        msg += "------------------------\n\n"
-        
-        msg += "🎯 *投信力挺買超前五名：*\n"
-        if not top_it.empty:
-            for _, row in top_it.iterrows():
-                msg += f"▪️ `{row['stock_id']}`：買超 {int(row['buy']/1000)} 張 | 賣超 {int(row['sell']/1000)} 張\n"
-        else:
-            msg += "暫無資料\n"
+            if df_stock_chips.empty:
+                continue
+                
+            # 確保法人名稱小寫
+            df_stock_chips["name"] = df_stock_chips["name"].str.lower()
             
-        msg += "\n👽 *外資現蹤買超前五名：*\n"
-        if not top_fi.empty:
-            for _, row in top_fi.iterrows():
-                msg += f"▪️ `{row['stock_id']}`：買超 {int(row['buy']/1000)} 張 | 賣超 {int(row['sell']/1000)} 張\n"
-        else:
-            msg += "暫無資料\n"
+            # 抓出這檔股票最新的籌碼日期，並更新全域參考日期
+            stock_latest_date = df_stock_chips["date"].max()
+            latest_date_detected = stock_latest_date
             
-        msg += "\n💡 *提示*：中小型股跟著「投信作帳」走，通常波段勝率較高。"
+            # 只取最新那一天的數據
+            df_latest = df_stock_chips[df_stock_chips["date"] == stock_latest_date]
+            
+            for _, row in df_latest.iterrows():
+                net_buy = int((row["buy"] - row["sell"]) / 1000) # 換算成張數
+                
+                # 篩選條件：投信當日買超 > 200張，或外資買超 > 1000張（全市場股票多，條件可以稍微拉高）
+                if row["name"] == "investment_trust" and net_buy > 200:
+                    it_buyers.append({"id": pure_code, "name": stock_name, "net": net_buy})
+                elif row["name"] == "foreign_investor" and net_buy > 1000:
+                    fi_buyers.append({"id": pure_code, "name": stock_name, "net": net_buy})
+                    
+        except Exception as e:
+            # 遇到異常直接跳過，不影響整個迴圈
+            continue
+            
+        # 頻率控制：免費用戶每查 10 檔稍微歇個 0.1 秒，避免被官方短時間封鎖
+        if idx % 10 == 0:
+            time.sleep(0.1)
+
+    print("2. 全市場電子股籌碼比對完成，開始排序前 5 名...")
+    
+    # 依買超張數由大到小排序
+    top_it = sorted(it_buyers, key=lambda x: x["net"], reverse=True)[:5]
+    top_fi = sorted(fi_buyers, key=lambda x: x["net"], reverse=True)[:5]
+    
+    # 3. 組裝 Telegram 訊息 (帶上動態抓到的股票中文名稱！)
+    msg = f"📊 *【策略二：全市場動態籌碼跟單】*\n"
+    msg += f"📅 籌碼日期：`{latest_date_detected}`\n"
+    msg += f"🕵️ 掃描範圍：證交所全市場電子科技股 ({len(strat2_candidates)} 檔)\n"
+    msg += "------------------------\n\n"
+    
+    msg += "🎯 *投信今日全市場重倉 (淨買超張數)：*\n"
+    if top_it:
+        for item in top_it:
+            msg += f"▪️ `{item['id']}` {item['name']}：`+{item['net']}` 張\n"
+    else:
+        msg += "今日全市場暫無投信大買標的。\n"
         
-        print("4. 嘗試發送訊息至 Telegram...")
-        success = send_tg(msg)
-        if success:
-            print("✨ Telegram 訊息發送成功！")
-        else:
-            print("❌ Telegram 訊息發送失敗。")
-            
-    except Exception as e:
-        print(f"❌ 策略二執行時發生重大錯誤: {e}")
-        send_tg(f"❌ 策略二執行錯誤: {e}")
+    msg += "\n👽 *外資今日全市場強吸 (淨買超張數)：*\n"
+    if top_fi:
+        for item in top_fi:
+            msg += f"▪️ `{item['id']}` {item['name']}：`+{item['net']}` 張\n"
+    else:
+        msg += "今日全市場暫無外資大買標的。\n"
+        
+    msg += "\n💡 *提示*：本報告已透過證交所 OpenAPI 實現全市場動態同步，且免付費。"
+    
+    print("3. 嘗試發送訊息至 Telegram...")
+    success = send_tg(msg)
+    if success:
+        print("✨ Telegram 全市場籌碼報告發送成功！")
+    else:
+        print("❌ Telegram 發送失敗。")
 
 # ==========================================
 # 📑 策略三：定期基本面營收雙增篩選
