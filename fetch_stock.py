@@ -239,57 +239,70 @@ def scan_strategy_2_chips():
         print("❌ Telegram 發送失敗。")
 
 # ==========================================
-# 📈 策略三：營收雙增股篩選 (官方 OpenAPI 免付費版)
+# 📈 策略三：營收雙增股篩選 (官方 OpenAPI 穩定防擋版)
 # ==========================================
 def scan_strategy_3_fundamental():
     print("📈 啟動 [策略三：每月營收雙增股篩選]...")
     import requests
     
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    # 填入更完整的瀏覽器偽裝，防止證交所判定為爬蟲而拒絕連線 (避免 403 錯誤)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7'
+    }
+    
     candidates = []
     
     try:
-        # 直接向證交所 OpenAPI 抓取最新一期的「採用國際會計準則營收彙總表」
-        # 本 API 完全免費、無流量限制，完美繞過 FinMind 付費牆
         url = "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
-        res = requests.get(url, headers=headers, timeout=15)
+        res = requests.get(url, headers=headers, timeout=20)
         
-        if res.status_code == 200:
-            data = res.json()
-            print(f"📥 成功獲取官方營收資料，共 {len(data)} 筆紀錄。")
+        # 先檢查狀態碼是否正常
+        if res.status_code != 200:
+            print(f"❌ 證交所伺服器拒絕連線，狀態碼: {res.status_code}")
+            raise Exception(f"證交所 API 拒絕存取 (HTML {res.status_code})")
             
-            for item in data:
-                # 欄位解析說明：
-                # "公司代號", "公司名稱"
-                # "當月營收": 本月營收
-                # "上月營收": 上個月營收
-                # "去年當月營收": 去年同月營收
-                # "上月比較增減(%)": MoM 營收月增率
-                # "去年同月比較增減(%)": YoY 營收年增率
+        # 檢查回傳內容是否為空
+        if not res.text.strip():
+            raise Exception("證交所回傳了空內容")
+            
+        # 確保開頭是 JSON 的方括號
+        if not res.text.strip().startswith('['):
+            print(f"⚠️ 回傳內容異常，前50個字元為: {res.text[:50]}")
+            raise Exception("證交所未回傳標準 JSON 格式資料")
+            
+        data = res.json()
+        print(f"📥 成功獲取官方營收資料，共 {len(data)} 筆紀錄。")
+        
+        for item in data:
+            try:
+                code = item.get("公司代號", "").strip()
+                name = item.get("公司名稱", "").strip()
                 
-                try:
-                    code = item.get("公司代號", "").strip()
-                    name = item.get("公司名稱", "").strip()
-                    
-                    # 篩選指標電子股開頭 (與策略二相同範圍)
-                    if not code.startswith(('23', '24', '30', '32', '34', '35', '36', '37', '61', '62', '64', '80')):
-                        continue
-                        
-                    mom = float(item.get("上月比較增減(%)", 0))
-                    yoy = float(item.get("去年同月比較增減(%)", 0))
-                    rev_this_month = int(int(item.get("當月營收", 0)) / 1000) # 換算成萬元
-                    
-                    # 🔥 核心條件：月增率 > 10% 且 年增率 > 20% (雙增強勢股)
-                    if mom > 10.0 and yoy > 20.0:
-                        candidates.append({
-                            "id": code,
-                            "name": name,
-                            "mom": mom,
-                            "yoy": yoy,
-                            "rev": rev_this_month
-                        })
-                except:
+                # 篩選指標電子股開頭
+                if not code.startswith(('23', '24', '30', '32', '34', '35', '36', '37', '61', '62', '64', '80')):
                     continue
+                    
+                mom = float(item.get("上月比較增減(%)", 0))
+                yoy = float(item.get("去年同月比較增減(%)", 0))
+                
+                # 處理當月營收可能為空字串的情況
+                rev_str = item.get("當月營收", "0").strip()
+                rev_this_month = int(int(rev_str if rev_str else 0) / 1000) # 換算成萬元
+                
+                # 核心條件：月增率 > 10% 且 年增率 > 20%
+                if mom > 10.0 and yoy > 20.0:
+                    candidates.append({
+                        "id": code,
+                        "name": name,
+                        "mom": mom,
+                        "yoy": yoy,
+                        "rev": rev_this_month
+                    })
+            except:
+                continue
+                
     except Exception as e:
         print(f"❌ 證交所營收 API 讀取異常: {e}")
         raise e
@@ -297,7 +310,6 @@ def scan_strategy_3_fundamental():
     # 排序：依照年增率 (YoY) 從大到小排序，取前 5 名
     top_fundamental = sorted(candidates, key=lambda x: x["yoy"], reverse=True)[:5]
     
-    # 取得最新營收月份提示（通常最新公開的會是上個月份）
     msg = f"📈 *【策略三：每月營收雙增強勢股】*\n"
     msg += f"📅 數據來源：證交所最新公告營收彙總\n"
     msg += f"🕵️ 篩選標準：電子科技股 + 營收月增 > 10% + 年增 > 20%\n"
@@ -313,7 +325,7 @@ def scan_strategy_3_fundamental():
     else:
         msg += "本期暫無符合「月增>10%且年增>20%」的電子科技股。\n"
         
-    msg += "💡 *提示*：本策略已全面改用台灣證交所官方數據，免除 FinMind 付費權限限制。"
+    msg += "\n💡 *提示*：本策略已全面改用台灣證交所官方數據，免除 FinMind 付費權限限制。"
     
     send_tg(msg)
 
