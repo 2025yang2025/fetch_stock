@@ -2,22 +2,30 @@ name: Taiwan Stock Advanced Strategies Bot
 
 on:
   schedule:
-    # 1. 盤中策略：週一至週五 台北時間 09:05, 11:05, 13:05 (對應 UTC 01:05, 03:05, 05:05)
-    - cron: '5 1,3,5 * * 1-5'
-    
-    # 2. 盤後籌碼：週一至週五 台北時間 17:00 (對應 UTC 09:00)
-    - cron: '0 9 * * 1-5'
-    
-    # 3. 基本面篩選：每週六 台北時間 10:00 (對應 UTC 02:00)
+    # 1. 策略一：台北時間 14:37 (UTC 06:37)
+    - cron: '37 6 * * 1-5'
+    # 2. 策略二：台北時間 17:05 (UTC 09:05)
+    - cron: '5 9 * * 1-5'
+    # 3. 策略三：每週六台北時間 10:00 (UTC 02:00)
     - cron: '0 2 * * 6'
     
-  workflow_dispatch: # 保持手動測試功能
+  workflow_dispatch: # 手動觸發時，跳出下拉選單供你選擇
+    inputs:
+      strategy_to_run:
+        description: '請選擇要手動測試的策略'
+        required: true
+        default: 'strategy_1'
+        type: choice
+        options:
+          - strategy_1
+          - strategy_2
+          - strategy_3
 
 jobs:
   run-stock-bot:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout
+    - name: Checkout Repository
       uses: actions/checkout@v4
 
     - name: Set up Python
@@ -28,29 +36,37 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        # 確保這裡全部使用小寫的 finmind
         pip install requests pandas finmind
 
-    # 執行策略 1：盤中突破
+    # ==========================================
+    # 執行策略 1：盤中/盤後 K 線突破
+    # ==========================================
     - name: Run Intraday Strategy
-      if: github.event.schedule == '5 1,3,5 * * 1-5' || github.event_name == 'workflow_dispatch'
+      if: github.event.schedule == '37 6 * * 1-5' || github.event.inputs.strategy_to_run == 'strategy_1'
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }} 
       run: python fetch_stock.py strategy_1
 
+    # ==========================================
     # 執行策略 2：盤後籌碼
+    # ==========================================
     - name: Run After-Hours Strategy
-      if: github.event.schedule == '0 9 * * 1-5'
+      if: github.event.schedule == '5 9 * * 1-5' || github.event.inputs.strategy_to_run == 'strategy_2'
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }} 
       run: python fetch_stock.py strategy_2
 
+    # ==========================================
     # 執行策略 3：基本面篩選
+    # ==========================================
     - name: Run Fundamental Strategy
-      if: github.event.schedule == '0 2 * * 6'
+      if: github.event.schedule == '0 2 * * 6' || github.event.inputs.strategy_to_run == 'strategy_3'
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }} 
       run: python fetch_stock.py strategy_3
