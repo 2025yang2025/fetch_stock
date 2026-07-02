@@ -282,17 +282,41 @@ def scan_strategy_3_fundamental():
         send_tg(f"❌ 策略三執行錯誤: {e}")
 
 # ==========================================
-# 🏁 程式進入點
+# 🏁 程式進入點（全自動通吃版）
 # ==========================================
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("請指定策略參數 (strategy_1 / strategy_2 / strategy_3)")
-        sys.exit(1)
+    # 如果有帶參數，就單獨跑該策略 (保留原本的手動彈性)
+    if len(sys.argv) >= 2:
+        mode = sys.argv[1]
+        if mode == "strategy_1":
+            scan_strategy_1_breakout()
+        elif mode == "strategy_2":
+            scan_strategy_2_chips()
+        elif mode == "strategy_3":
+            scan_strategy_3_fundamental()
+            
+    # 🔥 重點：如果不帶參數，直接全自動「三個策略連發」！
+    else:
+        print("🤖 啟動全自動排程模式：開始連續執行三個策略...")
         
-    mode = sys.argv[1]
-    if mode == "strategy_1":
-        scan_strategy_1_breakout()
-    elif mode == "strategy_2":
-        scan_strategy_2_chips()
-    elif mode == "strategy_3":
-        scan_strategy_3_fundamental()
+        try:
+            scan_strategy_1_breakout()
+        except Exception as e:
+            print(f"⚠️ 策略一自動執行失敗: {e}")
+            
+        # 稍微歇個 3 秒，避免 Telegram 訊息發送太快被阻擋
+        time.sleep(3) 
+        
+        try:
+            scan_strategy_2_chips()
+        except Exception as e:
+            print(f"⚠️ 策略二自動執行失敗: {e}")
+            
+        time.sleep(3)
+        
+        try:
+            scan_strategy_3_fundamental()
+        except Exception as e:
+            print(f"⚠️ 策略三自動執行失敗: {e}")
+            
+        print("✨ 三大策略已全數掃描並自動發送至 Telegram 完成！")
