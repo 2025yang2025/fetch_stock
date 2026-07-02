@@ -239,47 +239,83 @@ def scan_strategy_2_chips():
         print("❌ Telegram 發送失敗。")
 
 # ==========================================
-# 📑 策略三：定期基本面營收雙增篩選
+# 📈 策略三：營收雙增股篩選 (官方 OpenAPI 免付費版)
 # ==========================================
 def scan_strategy_3_fundamental():
-    print("📑 啟動 [策略三：定期基本面營收雙增篩選]...")
-    api = get_api()
-    start_date = (datetime.datetime.now() - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
+    print("📈 啟動 [策略三：每月營收雙增股篩選]...")
+    import requests
+    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    candidates = []
     
     try:
-        df_revenue = api.taiwan_stock_month_revenue(start_date=start_date)
-        if df_revenue.empty:
-            send_tg("⚠️ 【策略三失敗】無法獲取最新月份營收資料。")
-            return
+        # 直接向證交所 OpenAPI 抓取最新一期的「採用國際會計準則營收彙總表」
+        # 本 API 完全免費、無流量限制，完美繞過 FinMind 付費牆
+        url = "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
+        res = requests.get(url, headers=headers, timeout=15)
+        
+        if res.status_code == 200:
+            data = res.json()
+            print(f"📥 成功獲取官方營收資料，共 {len(data)} 筆紀錄。")
             
-        df_revenue.columns = df_revenue.columns.str.lower()
-        latest_date = df_revenue["date"].max()
-        df_latest = df_revenue[df_revenue["date"] == latest_date].copy()
-        
-        df_latest["stock_id"] = df_latest["stock_id"].astype(str)
-        growth_stocks = df_latest[
-            (df_latest["revenue_month_growth_rate"] > 0) & 
-            (df_latest["revenue_year_growth_rate"] > 20) &
-            (df_latest["stock_id"].str.len() == 4)
-        ]
-        
-        top_growth = growth_stocks.sort_values(by="revenue_year_growth_rate", ascending=False).head(8)
-        
-        msg = f"📑 *【策略三：基本面營收雙增榜】* (資料月份: {latest_date})\n"
-        msg += "系統已篩選出最新月營收「月增 ＞ 0%」且「年增 ＞ 20%」的成長股：\n\n"
-        
-        for _, row in top_growth.iterrows():
-            msg += f"📌 *{row['stock_id']} {row.get('stock_name', row['stock_id'])}*\n"
-            msg += f"📈 年增率：`+{round(row['revenue_year_growth_rate'], 1)}%`\n"
-            msg += f"📊 月增率：`+{round(row['revenue_month_growth_rate'], 1)}%`\n"
-            msg += "------------------------\n"
-            
-        msg += "\n🍀 適合納入中長線策略的「基本面護身」觀察清單。"
-        send_tg(msg)
-        print("✨ 策略三執行完成並發送成功！")
+            for item in data:
+                # 欄位解析說明：
+                # "公司代號", "公司名稱"
+                # "當月營收": 本月營收
+                # "上月營收": 上個月營收
+                # "去年當月營收": 去年同月營收
+                # "上月比較增減(%)": MoM 營收月增率
+                # "去年同月比較增減(%)": YoY 營收年增率
+                
+                try:
+                    code = item.get("公司代號", "").strip()
+                    name = item.get("公司名稱", "").strip()
+                    
+                    # 篩選指標電子股開頭 (與策略二相同範圍)
+                    if not code.startswith(('23', '24', '30', '32', '34', '35', '36', '37', '61', '62', '64', '80')):
+                        continue
+                        
+                    mom = float(item.get("上月比較增減(%)", 0))
+                    yoy = float(item.get("去年同月比較增減(%)", 0))
+                    rev_this_month = int(int(item.get("當月營收", 0)) / 1000) # 換算成萬元
+                    
+                    # 🔥 核心條件：月增率 > 10% 且 年增率 > 20% (雙增強勢股)
+                    if mom > 10.0 and yoy > 20.0:
+                        candidates.append({
+                            "id": code,
+                            "name": name,
+                            "mom": mom,
+                            "yoy": yoy,
+                            "rev": rev_this_month
+                        })
+                except:
+                    continue
     except Exception as e:
-        print(f"❌ 策略三執行時發生重大錯誤: {e}")
-        send_tg(f"❌ 策略三執行錯誤: {e}")
+        print(f"❌ 證交所營收 API 讀取異常: {e}")
+        raise e
+
+    # 排序：依照年增率 (YoY) 從大到小排序，取前 5 名
+    top_fundamental = sorted(candidates, key=lambda x: x["yoy"], reverse=True)[:5]
+    
+    # 取得最新營收月份提示（通常最新公開的會是上個月份）
+    msg = f"📈 *【策略三：每月營收雙增強勢股】*\n"
+    msg += f"📅 數據來源：證交所最新公告營收彙總\n"
+    msg += f"🕵️ 篩選標準：電子科技股 + 營收月增 > 10% + 年增 > 20%\n"
+    msg += "------------------------\n\n"
+    
+    msg += "🚀 *最新營收雙增前 5 名表現黑馬：*\n"
+    if top_fundamental:
+        for item in top_fundamental:
+            msg += f"▪️ `{item['id']}` {item['name']}\n"
+            msg += f"   📊 當月營收：`{item['rev']:,}` 萬元\n"
+            msg += f"   🚀 月增率 (MoM)：`+{item['mom']:.1f}%`\n"
+            msg += f"   🔥 年增率 (YoY)：`+{item['yoy']:.1f}%`\n\n"
+    else:
+        msg += "本期暫無符合「月增>10%且年增>20%」的電子科技股。\n"
+        
+    msg += "💡 *提示*：本策略已全面改用台灣證交所官方數據，免除 FinMind 付費權限限制。"
+    
+    send_tg(msg)
 
 # ==========================================
 # 🏁 程式進入點（全面加強防禦防撞牆版）
