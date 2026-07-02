@@ -75,67 +75,96 @@ def get_api():
     return api
 
 # ==========================================
-# 🚀 策略一：全市場 K 線動態突破掃描
+# 🚀 策略一：全市場日K線強勢突破掃描 (證交所直接動態對比版)
 # ==========================================
 def scan_strategy_1_breakout():
-    print("🚀 啟動 [策略一：全市場 K 線動態突破掃描]...")
-    api = get_api()
+    print("🚀 啟動 [策略一：全市場日K線強勢突破掃描]...")
     today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.datetime.now() - datetime.timedelta(days=90)).strftime("%Y-%m-%d")
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    
+    triggered_stocks = []
     
     try:
-        df_all = api.taiwan_stock_price_all()
-        if df_all is None or df_all.empty:
-            send_tg(f"🔍 *【策略一：K 線動態突破】* ({today_str})\n今日全市場日K線尚未由 API 完全轉檔上架，暫無訊號。")
+        # 直接使用證交所當日全市場量價 OpenAPI，完全不消耗 FinMind 配額，更不會報錯
+        url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+        res = requests.get(url, headers=headers, timeout=15)
+        
+        if res.status_code != 200 or not res.text.strip().startswith('['):
+            send_tg(f"🔍 *【策略一：K 線動態突破】* ({today_str})\n今日證交所日K伺服器繁忙，暫時無法取得即時量價。")
             return
             
-        df_all.columns = df_all.columns.str.lower()
-        df_all["stock_id"] = df_all["stock_id"].astype(str)
+        data = res.json()
+        print(f"⚙️ 成功取得證交所當日量價共 {len(data)} 筆，進行強勢股篩選...")
         
-        filtered_df = df_all[
-            (df_all["trading_volume"] >= 1000000) & 
-            (df_all["close"] >= 10) & 
-            (df_all["stock_id"].str.len() == 4)
-        ]
-        
-        candidate_list = filtered_df["stock_id"].tolist()
-        triggered_stocks = []
-        
-        print(f"⚙️ 符合量價初篩共 {len(candidate_list)} 檔，進行動態突破分析...")
-        for symbol in candidate_list[:60]:
+        for item in data:
             try:
-                df_k = api.taiwan_stock_price(stock_id=symbol, start_date=start_date)
-                if df_k is None or df_k.empty or len(df_k) < 25:
+                code = item.get("Code", "").strip()
+                name = item.get("Name", "").strip()
+                
+                # 只鎖定標準4碼的電子科技股主戰場
+                if not (code.isdigit() and len(code) == 4 and code.startswith(('23', '24', '30', '32', '34', '35', '36', '37', '61', '62', '64', '80'))):
                     continue
                 
-                df_k.columns = df_k.columns.str.lower()
-                df_k["20h"] = df_k["close"].shift(1).rolling(window=20).max()
+                # 清洗數值，移除千分位逗號
+                vol_str = item.get("TradeVolume", "0").replace(",", "").strip()
+                volume = int(vol_str) if vol_str else 0
                 
-                last_row = df_k.iloc[-1]
-                current_close = last_row["close"]
-                prev_20h = last_row["20h"]
+                # 量能初篩：當日成交量必須大於 1,500 張 (1,500,000 股)，確保流動性
+                if volume < 1500000:
+                    continue
+                    
+                close_str = item.get("ClosingPrice", "0").replace(",", "").strip()
+                open_str = item.get("OpeningPrice", "0").replace(",", "").strip()
+                high_str = item.get("HighestPrice", "0").replace(",", "").strip()
                 
-                if current_close > prev_20h:
-                    prev_close = df_k.iloc[-2]["close"]
-                    change_percent = ((current_close - prev_close) / prev_close) * 100
-                    triggered_stocks.append({
-                        "id": symbol, 
-                        "name": DYNAMIC_STOCK_NAMES.get(f"{symbol}.TW", symbol), 
-                        "close": current_close, 
-                        "change": round(change_percent, 2),
-                        "volume": int(last_row["trading_volume"] / 1000)
-                    })
+                if not (close_str and open_str and high_str):
+                    continue
+                    
+                close_price = float(close_str)
+                open_price = float(open_str)
+                high_price = float(high_str)
+                
+                # 計算今日漲幅
+                ud_str = item.get("PriceDiff", "0").replace(",", "").strip()
+                try:
+                    # 有些欄位帶有正負號
+                    diff = float(ud_str)
+                    prev_close = close_price - diff
+                    change_percent = (diff / prev_close) * 100 if prev_close else 0.0
+                except:
+                    change_percent = 0.0
+                
+                # 🔥 【強勢動態突破核心條件】：
+                # 1. 今日收盤價大於等於 15 元 (避開雞水餃股)
+                # 2. 今日大漲超過 4.5% (展現突破氣勢)
+                # 3. 收在當天最高價附近 (收盤價距離最高價小於 0.5%) -> 代表主力尾盤強力鎖單，極具突破慣性！
+                if close_price >= 15.0 and change_percent >= 4.5:
+                    if (high_price - close_price) <= (close_price * 0.005):
+                        triggered_stocks.append({
+                            "id": code,
+                            "name": name,
+                            "close": close_price,
+                            "change": round(change_percent, 2),
+                            "volume": int(volume / 1000) # 換算成張數
+                        })
             except:
                 continue
 
+        # 發送 Telegram 通知
         if triggered_stocks:
-            msg = f"🚀 *【策略一：K 線動態突破警示】* ({today_str})\n系統已自動掃描全市場，今日「突破 20 日高點」的強勢股：\n\n"
+            msg = f"🚀 *【策略一：全市場 K 線強勢突破警示】* ({today_str})\n系統已掃描全市場電子股，今日符合「爆量長紅且強勢收最高」突破訊號：\n\n"
+            # 依漲幅前 8 名排序
             triggered_stocks = sorted(triggered_stocks, key=lambda x: x["change"], reverse=True)[:8]
             for stock in triggered_stocks:
-                msg += f"📌 *{stock['id']} {stock['name']}*\n💰 收盤價：`{stock['close']}` ({stock['change']}%)\n📊 成交量：{stock['volume']} 張\n------------------------\n"
+                msg += f"📌 *{stock['id']} {stock['name']}*\n💰 收盤價：`{stock['close']}` (`+{stock['change']}%`)\n📊 成交量：`{stock['volume']:,}` 張\n------------------------\n"
         else:
-            msg = f"🔍 *【策略一：K 線動態突破】* ({today_str})\n今日全台股暫無個股符合突破訊號。"
+            msg = f"🔍 *【策略一：K 線動態突破】* ({today_str})\n今日全台股暫無電子股符合「爆量收最高」的強勢突破訊號。"
+            
         send_tg(msg)
+        
     except Exception as e:
         send_tg(f"❌ 策略一執行中斷錯誤: {e}")
 
