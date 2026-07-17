@@ -49,7 +49,7 @@ def scan_all_hong_kong_market_fast():
         
         try:
             # 僅下載今日（1d）的資料，不下載歷史區間，大幅減少資料傳輸量
-            df_today = yf.download(batch_str, period="1d", progress=False, m silent=True)
+            df_today = yf.download(batch_str, period="1d", progress=False, ignore_tz=True)
             if df_today.empty:
                 continue
             
@@ -94,7 +94,7 @@ def scan_all_hong_kong_market_fast():
     # 因為只剩幾百檔，直接一次打包下載，1 秒就能完成
     shortlist_str = " ".join(shortlist)
     try:
-        df_detailed = yf.download(shortlist_str, period="2d", group_by="ticker", progress=False, m silent=True)
+        df_detailed = yf.download(shortlist_str, period="2d", group_by="ticker", progress=False, ignore_tz=True)
         
         for ticker in shortlist:
             if ticker not in df_detailed.columns.levels[0]:
