@@ -1,260 +1,161 @@
 import os
-import sys
-import datetime
 import time
-import requests
+import datetime
 import pandas as pd
+import requests
 import yfinance as yf
 
-# ==========================================
-# ⚙️ 系統基本設定 (安全動態讀取環境變數)
-# ==========================================
-# 請在環境變數中設定 TELEGRAM_TOKEN 與 TELEGRAM_CHAT_ID
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# 🎯 港股核心科技、網聯、半導體與 AI 概念股名單 (對標原先的 AI 價值清單)
-HK_TECH_PORTFOLIO = {
-    "0700.HK": "騰訊控股",
-    "3690.HK": "美團-W",
-    "9988.HK": "阿里巴巴-W",
-    "1810.HK": "小米集團-W",
-    "9618.HK": "京東集團-SW",
-    "9999.HK": "網易-S",
-    "0981.HK": "中芯國際",
-    "1347.HK": "華虹半導體",
-    "0992.HK": "聯想集團",
-    "2411.HK": "百川智能", # 示意港股AI
-    "2015.HK": "理想汽車-W",
-    "9868.HK": "小鵬汽車-W",
-    "9866.HK": "蔚來-SW",
-    "2859.HK": "易方達恆生科技ETF" # 亦可監控科技ETF作為基期參考
-}
-
-# 🌐 港股主要監控全市場清單 (熱門大型港股，若要掃描全市場可用此當基礎)
-GLOBAL_HK_TICKERS = list(HK_TECH_PORTFOLIO.keys()) + [
-    "0005.HK", "1299.HK", "0939.HK", "1398.HK", "3988.HK", "2318.HK", "2628.HK", "0388.HK"
-]
+def generate_all_hk_tickers():
+    """產生港股 1 到 9999 的標準代號格式"""
+    return [f"{i:04d}.HK" for i in range(1, 10000)]
 
 def send_tg(text):
-    """發送 Telegram 訊息的通用函式"""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("❌ 錯誤：未設定 TELEGRAM_TOKEN 或 TELEGRAM_CHAT_ID 環境變數。")
+        print("❌ 錯誤：未設定 Telegram，僅在終端機輸出。")
+        print(text)
         return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown"
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        return response.status_code == 200
+        requests.post(url, json=payload, timeout=10)
+        return True
     except Exception as e:
         print(f"❌ Telegram 發送失敗: {e}")
         return False
 
 # ==========================================
-# 🚀 策略一：港股日K線強勢突破掃描 (爆量收最高)
+# ⚡ 核心優化：雙階段極速掃描
 # ==========================================
-def scan_strategy_1_breakout():
-    print("🚀 啟動 [策略一：港股日K線強勢突破掃描]...")
-    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    triggered_stocks = []
+def scan_all_hong_kong_market_fast():
+    start_time = time.time()
+    print("🔄 正在初始化全港股代號 (0001.HK - 9999.HK)...")
+    all_tickers = generate_all_hk_tickers()
+    total_candidates = len(all_tickers)
     
-    # 使用 yfinance 批次獲取港股核心科技股當日即時與昨日歷史數據
-    tickers_str = " ".join(GLOBAL_HK_TICKERS)
-    try:
-        # 獲取最近兩天的日K資料，以便計算漲跌幅
-        df = yf.download(tickers_str, period="2d", group_by="ticker", progress=False)
-        if df.empty:
-            print("⚠️ 無法從 Yahoo Finance 獲取即時資料。")
-            return
+    # ------------------------------------------
+    # 第一階段：極速粗篩 (只下載今日 1d 簡要數據)
+    # ------------------------------------------
+    print(f"🚀 【第一階段】開始快速篩選成交量與股價... (共 {total_candidates} 檔)")
+    
+    batch_size = 500  # 粗篩時一次投 500 檔，速度極快
+    shortlist = []     # 存放通過初選的股票資訊
+    
+    for i in range(0, total_candidates, batch_size):
+        batch = all_tickers[i:i+batch_size]
+        batch_str = " ".join(batch)
+        
+        try:
+            # 僅下載今日（1d）的資料，不下載歷史區間，大幅減少資料傳輸量
+            df_today = yf.download(batch_str, period="1d", progress=False, m silent=True)
+            if df_today.empty:
+                continue
             
-        for ticker in GLOBAL_HK_TICKERS:
-            try:
-                if ticker not in df.columns.levels[0]:
-                    continue
-                sub_df = df[ticker].dropna()
-                if len(sub_df) < 2:
+            for ticker in batch:
+                if ticker not in df_today.columns.levels[0]:
                     continue
                 
-                # 昨日與今日價格
-                prev_close = sub_df["Close"].iloc[-2]
-                today_open = sub_df["Open"].iloc[-1]
-                today_high = sub_df["High"].iloc[-1]
-                today_close = sub_df["Close"].iloc[-1]
-                today_volume = sub_df["Volume"].iloc[-1]
+                # 取得今日最後一筆資料（即目前最新價與成交量）
+                sub_df = df_today[ticker].dropna()
+                if sub_df.empty:
+                    continue
                 
-                # 計算漲跌幅 (%)
-                change_percent = ((today_close - prev_close) / prev_close) * 100
+                close_price = sub_df["Close"].iloc[-1]
+                volume = sub_df["Volume"].iloc[-1]
+                turnover = close_price * volume  # 今日成交額
                 
-                # 港股篩選標準調整：
-                # 1. 股價 >= 5 HKD (避開仙股/細股)
-                # 2. 單日漲幅 >= 4.0%
-                # 3. 日成交量 > 1,000,000 股 (港股流動性集中在頭部股)
-                # 4. 強勢收最高 (收盤距離最高價 < 0.5%)
-                if today_close >= 5.0 and change_percent >= 4.0 and today_volume >= 1000000:
-                    if (today_high - today_close) <= (today_close * 0.005):
-                        pure_code = ticker.split('.')[0]
-                        name = HK_TECH_PORTFOLIO.get(ticker, f"港股 {pure_code}")
-                        triggered_stocks.append({
-                            "id": pure_code,
-                            "name": name,
-                            "close": round(today_close, 2),
-                            "change": round(change_percent, 2),
-                            "volume": int(today_volume)
-                        })
-            except Exception as e:
-                print(f"解析 {ticker} 失敗: {e}")
+                # 🎯 粗篩閥值：股價 >= 1 元 且 今日成交額 >= 8,000,000 港幣
+                # 這樣可以直接在第一時間砍掉 95% 以上的無效代號
+                if close_price >= 1.0 and turnover >= 8000000:
+                    shortlist.append(ticker)
+                    
+            print(f"  ⚡ 已掃描至 {min(i+batch_size, total_candidates)} 檔... 目前初選入圍：{len(shortlist)} 檔")
+            time.sleep(0.5)  # 輕微延遲即可
+            
+        except Exception as e:
+            print(f"⚠️ 粗篩批次 {i // batch_size + 1} 出錯: {e}")
+            continue
+            
+    print(f"\n✅ 【第一階段完成】耗時: {time.time() - start_time:.1f} 秒")
+    print(f"🎯 從 9999 檔中成功篩選出 {len(shortlist)} 檔活躍港股！")
+    
+    if not shortlist:
+        send_tg("🔍 *【港股掃描】*\n今日市場流動性低落，無任何股票達到 800 萬港幣成交額閥值。")
+        return
+
+    # ------------------------------------------
+    # 第二階段：精準下載 (只針對入圍的強勢股進行多日分析)
+    # ------------------------------------------
+    print(f"\n🚀 【第二階段】開始針對這 {len(shortlist)} 檔進行 2 天 K 線深度分析...")
+    valid_active_stocks = []
+    
+    # 因為只剩幾百檔，直接一次打包下載，1 秒就能完成
+    shortlist_str = " ".join(shortlist)
+    try:
+        df_detailed = yf.download(shortlist_str, period="2d", group_by="ticker", progress=False, m silent=True)
+        
+        for ticker in shortlist:
+            if ticker not in df_detailed.columns.levels[0]:
+                continue
+            
+            sub_df = df_detailed[ticker].dropna()
+            if len(sub_df) < 2:
                 continue
                 
-        if triggered_stocks:
-            msg = f"🚀 *【策略一：港股 K 線強勢突破警示】* ({today_str})\n系統已掃描港股科技板塊，今日符合「爆量長紅且強勢收最高」突破訊號：\n\n"
-            triggered_stocks = sorted(triggered_stocks, key=lambda x: x["change"], reverse=True)[:8]
-            for stock in triggered_stocks:
-                msg += f"📌 *{stock['id']} {stock['name']}*\n💰 收盤價：`{stock['close']} HKD` (`+{stock['change']}%`)\n📊 成交量：`{stock['volume']:,}` 股\n------------------------\n"
-        else:
-            msg = f"🔍 *【策略一：港股 K 線動態突破】* ({today_str})\n今日監控港股中暫無符合「爆量收最高」的強勢突破訊號。"
+            prev_close = sub_df["Close"].iloc[-2]
+            today_open = sub_df["Open"].iloc[-1]
+            today_high = sub_df["High"].iloc[-1]
+            today_close = sub_df["Close"].iloc[-1]
+            today_volume = sub_df["Volume"].iloc[-1]
             
-        send_tg(msg)
+            turnover = today_volume * today_close
+            change_percent = ((today_close - prev_close) / prev_close) * 100
+            
+            pure_code = ticker.split('.')[0]
+            valid_active_stocks.append({
+                "id": pure_code,
+                "close": today_close,
+                "high": today_high,
+                "change": change_percent,
+                "volume": today_volume,
+                "turnover": turnover
+            })
     except Exception as e:
-        send_tg(f"❌ 港股策略一執行中斷錯誤: {e}")
+        print(f"❌ 第二階段詳細資料下載失敗: {e}")
+        return
 
-# ==========================================
-# 📊 策略二：港股南向資金 (大市籌碼流向)
-# ==========================================
-def scan_strategy_2_chips():
-    """港股沒有台灣的法人買賣超，但港股最關鍵的籌碼指標是「北水 (南向資金)」流入。"""
-    print("📊 啟動 [策略二：港股南向資金與大單監控]...")
+    # ------------------------------------------
+    # 📊 策略篩選與 TG 發送
+    # ------------------------------------------
     today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    
-    # 港股無公開的即時個股南向資金免費 OpenAPI，此處利用 yfinance 分析頭部外資與機構持股比例變動，
-    # 或者是透過抓取主流港股的成交額佔比（Turnover Ratio）來判定主力吸籌。
-    triggered_stocks = []
-    tickers_str = " ".join(GLOBAL_HK_TICKERS)
-    
-    try:
-        df = yf.download(tickers_str, period="5d", group_by="ticker", progress=False)
-        for ticker in GLOBAL_HK_TICKERS:
-            try:
-                sub_df = df[ticker].dropna()
-                if len(sub_df) < 5:
-                    continue
-                
-                # 計算 5 日平均成交量
-                avg_vol_5d = sub_df["Volume"].mean()
-                today_vol = sub_df["Volume"].iloc[-1]
-                today_close = sub_df["Close"].iloc[-1]
-                
-                # 量比大於 1.5 倍 且 今日收紅，視為主力異常吸籌（跟單訊號）
-                volume_ratio = today_vol / avg_vol_5d if avg_vol_5d else 0
-                if volume_ratio >= 1.5 and today_close > sub_df["Close"].iloc[-2]:
-                    pure_code = ticker.split('.')[0]
-                    name = HK_TECH_PORTFOLIO.get(ticker, f"港股 {pure_code}")
-                    triggered_stocks.append({
-                        "id": pure_code,
-                        "name": name,
-                        "close": round(today_close, 2),
-                        "ratio": round(volume_ratio, 2),
-                        "volume": int(today_vol)
-                    })
-            except:
-                continue
-                
-        msg = f"📊 *【策略二：港股主力異常吸籌跟單】* ({today_str})\n🕵️ 篩選標準：今日成交量 > 5日均量 1.5 倍 + 收紅盤\n------------------------\n"
-        if triggered_stocks:
-            triggered_stocks = sorted(triggered_stocks, key=lambda x: x["ratio"], reverse=True)[:5]
-            for s in triggered_stocks:
-                msg += f"🔥 `{s['id']} {s['name']}`\n💰 收盤價：`{s['close']} HKD`\n📈 今日量比：`{s['ratio']}` 倍 (量能顯著異常放大)\n📊 成交量：`{s['volume']:,}` 股\n------------------------\n"
-        else:
-            msg += "今日港股監控名單暫無主力顯著異常吸籌標的。\n"
-            
-        send_tg(msg)
-    except Exception as e:
-        send_tg(f"❌ 港股策略二執行中斷錯誤: {e}")
+    master_df = pd.DataFrame(valid_active_stocks)
 
-# ==========================================
-# 📈 策略三：港股科技板塊基期回檔價值股 (PE 篩選)
-# ==========================================
-def scan_strategy_3_fundamental():
-    print("📈 啟動 [策略三：港股科技板塊基期回檔價值股]...")
-    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    triggered_stocks = []
-    
-    try:
-        # yfinance 可以一次拿個股的 Info（包含本益比 PE）
-        for ticker, name in HK_TECH_PORTFOLIO.items():
-            try:
-                t = yf.Ticker(ticker)
-                info = t.info
-                
-                pe = info.get("trailingPE", None)
-                close_price = info.get("currentPrice", None) or info.get("regularMarketPreviousClose", None)
-                volume = info.get("regularMarketVolume", 0)
-                
-                if pe is None or close_price is None:
-                    continue
-                
-                # 港股科技股價值篩選標準：
-                # 1. 歷史滾動 PE <= 25 倍 (對於龍頭科技股如騰訊、阿里等是相對安全基期)
-                # 2. 估值有安全邊際且非仙股 (PE > 0)
-                if 0 < pe <= 25.0:
-                    pure_code = ticker.split('.')[0]
-                    triggered_stocks.append({
-                        "id": pure_code,
-                        "name": name,
-                        "close": round(close_price, 2),
-                        "pe": round(pe, 2),
-                        "volume": int(volume)
-                    })
-                time.sleep(0.5) # 稍微緩衝，避免請求頻繁被 Yahoo 阻擋
-            except:
-                continue
-                
-        msg = f"🤖 *【策略三：港股 AI 與科技估值修正價值股】* ({today_str})\n篩選標準：科技龍頭 + 歷史 PE ≤ 25倍 (具備估值安全邊際)：\n\n"
-        if triggered_stocks:
-            triggered_stocks = sorted(triggered_stocks, key=lambda x: x["pe"])[:6]
-            for stock in triggered_stocks:
-                msg += f"📌 *{stock['id']} {stock['name']}*\n💰 當前股價：`{stock['close']} HKD`\n📊 目前本益比：`{stock['pe']}` 倍\n📈 今日成交量：`{stock['volume']:,}` 股\n💡 評語：巨頭基本面優勢，估值已修正至合理區間。\n------------------------\n"
-        else:
-            msg += "今日港股科技股中，暫無符合「PE ≤ 25 且數據完整」的標的。"
-            
-        send_tg(msg)
-    except Exception as e:
-        send_tg(f"❌ 港股策略三執行中斷錯誤: {e}")
+    # 策略一：爆量突破收最高 (漲幅 >= 5%, 收盤接近最高價)
+    breakout_cond = (master_df["change"] >= 5.0) & ((master_df["high"] - master_df["close"]) <= (master_df["close"] * 0.003))
+    breakout_df = master_df[breakout_cond].sort_values(by="change", ascending=False).head(5)
 
-# ==========================================
-# 🏁 程式進入點
-# ==========================================
-if __name__ == "__main__":
-    print("🤖 啟動香港股市科技/AI 策略掃描排程...")
-    
-    if len(sys.argv) >= 2:
-        mode = sys.argv[1]
-        if mode == "strategy_1":
-            scan_strategy_1_breakout()
-        elif mode == "strategy_2":
-            scan_strategy_2_chips()
-        elif mode == "strategy_3":
-            scan_strategy_3_fundamental()
+    msg_1 = f"🚀 *【全港股突破警示：強勢收最高】* ({today_str})\n（第一階段已濾除低流動性雜訊）\n\n"
+    if not breakout_df.empty:
+        for _, row in breakout_df.iterrows():
+            msg_1 += f"📌 *{row['id']}*\n💰 最新價：`{row['close']:.2f} HKD` (`+{row['change']:.2f}%`)\n📊 成交額：`{row['turnover']/1000000:.1f}M HKD`\n------------------------\n"
     else:
-        print("🤖 啟動全自動排程一鍵連發模式...")
-        
-        print("⏳ 正在執行策略一 (強勢突破)...")
-        try: scan_strategy_1_breakout()
-        except Exception as e: send_tg(f"❌ 策略一執行中斷錯誤: {e}")
-            
-        time.sleep(5) 
-        
-        print("⏳ 正在執行策略二 (主力吸籌)...")
-        try: scan_strategy_2_chips()
-        except Exception as e: send_tg(f"❌ 策略二執行中斷錯誤: {e}")
-            
-        time.sleep(5)
-        
-        print("⏳ 正在執行策略三 (低估值價值股)...")
-        try: scan_strategy_3_fundamental()
-        except Exception as e: send_tg(f"❌ 策略三執行中斷錯誤: {e}")
-            
-        print("✨ 港股策略掃描流程全數執行完畢。")
+        msg_1 += "今日全港股暫無符合「強勢突破收最高」標的。\n"
+
+    # 策略二：成交額 Top 5
+    volume_surge_df = master_df[master_df["change"] > 0.0].sort_values(by="turnover", ascending=False).head(5)
+    msg_2 = f"📊 *【全港股資金聚焦：今日成交額 Top 5】* ({today_str})\n\n"
+    if not volume_surge_df.empty:
+        for _, row in volume_surge_df.iterrows():
+            msg_2 += f"🔥 *{row['id']}*\n💰 收盤價：`{row['close']:.2f} HKD` (`+{row['change']:.2f}%`)\n💸 今日成交額：`{row['turnover']/1000000:.1f}M HKD`\n------------------------\n"
+
+    # 發送
+    send_tg(msg_1)
+    time.sleep(1)
+    send_tg(msg_2)
+    
+    print(f"🎉 任務圓滿結束！總花費時間: {time.time() - start_time:.1f} 秒")
+
+if __name__ == "__main__":
+    scan_all_hong_kong_market_fast()
