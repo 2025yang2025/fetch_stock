@@ -27,18 +27,14 @@ def send_tg(text):
         return False
 
 # ==========================================
-# ⚡ 全港股極速粗篩（自動相容週末/休市）
+# ⚡ 全港股極速粗篩（建立中文名稱對照表）
 # ==========================================
 def fetch_hk_shortlist_auto():
-    """
-    優先嘗試新浪即時 API，如果遇到週末（成交額全為 0），
-    則自動透過常用的藍籌與活躍股群組進行 yfinance 歷史數據回溯，確保週末也能跑出週五的報告。
-    """
-    print("🌐 正在抓取港股流動性數據...")
+    print("🌐 正在抓取港股流動性數據並建立中文名稱字典...")
     shortlist = []
+    name_dict = {}
     
-    # 嘗試從新浪獲取
-    for page in range(1, 6):
+    for page in range(1, 7):
         url = f"https://vip.stock.finance.sina.com.cn/hq/api/jsonp.php/IO.XSRV2.CallbackList['hk']/HK_Service.getMainMethodPageList?page={page}&num=80&sort=amount&asc=0"
         try:
             response = requests.get(url, timeout=10)
@@ -57,10 +53,10 @@ def fetch_hk_shortlist_auto():
                 pure_code = raw_code[-4:] if len(raw_code) == 5 else raw_code
                 ticker = f"{int(pure_code):04d}.HK"
                 
+                name_dict[pure_code] = row['name']
                 trade = float(row['trade'])      
                 turnover = float(row['amount'])  
                 
-                # 如果開盤日有正常成交額
                 if trade >= 1.0 and turnover >= 8000000:
                     shortlist.append(ticker)
         except:
@@ -68,18 +64,32 @@ def fetch_hk_shortlist_auto():
             
     shortlist = list(set(shortlist))
     
-    # 🎯 週末/休市應變防禦：如果新浪篩出來是空的（例如週六），
-    # 我們改用「港股前 150 大核心活躍股」名單強制進行歷史回溯（抓週五最後一天的K線）
     if not shortlist:
         print("⚠️ 偵測到當前可能為休市期間（成交額為0），啟動核心活躍股回溯機制...")
-        # 這裡精選了港股交易最頻繁、最容易出現突破的主板核心代號區間
         backup_tickers = []
-        # 精選主板最活躍的精華段（涵蓋騰訊、美團、阿里、比亞迪等核心標的）
-        for i in [1, 2, 3, 4, 5, 6, 11, 12, 16, 17, 27, 66, 175, 241, 267, 288, 386, 388, 700, 762, 857, 883, 941, 960, 981, 992, 1024, 1088, 1093, 1109, 1113, 1177, 1211, 1299, 1398, 1810, 1928, 2015, 2020, 2269, 2313, 2318, 2319, 2331, 2333, 2382, 2388, 2628, 3690, 3968, 3988, 6030, 9618, 9868, 9888, 9961, 9988, 9999]:
-            backup_tickers.append(f"{i:04d}.HK")
-        return backup_tickers
+        core_list = [
+            (1, "長江和記"), (2, "中電控股"), (3, "中華煤氣"), (4, "九龍倉集團"), (5, "匯豐控股"), 
+            (6, "電能實業"), (11, "恆生銀行"), (12, "恆基地產"), (16, "新鴻基地產"), (17, "新世界發展"), 
+            (27, "銀河娛樂"), (66, "港鐵公司"), (175, "吉利汽車"), (241, "阿里健康"), (267, "中信股份"), 
+            (288, "萬洲國際"), (386, "中國石油化工"), (388, "香港交易所"), (700, "騰訊控股"), (762, "中國聯通"), 
+            (857, "中國石油股份"), (883, "中國海洋石油"), (941, "中國移動"), (960, "龍湖集團"), (981, "中芯國際"), 
+            (992, "聯想集團"), (1024, "快手-W"), (1088, "中國神華"), (1093, "石藥集團"), (1109, "華潤置地"), 
+            (1113, "長實集團"), (1177, "中國生物製藥"), (1211, "比亞迪股份"), (1299, "友邦保險"), (1398, "工商銀行"), 
+            (1810, "小米集團-W"), (1928, "金沙中國有限公司"), (2015, "理想汽車-W"), (2020, "安踏體育"), 
+            (2269, "藥明生物"), (2313, "申洲國際"), (2318, "中國平安"), (2319, "蒙牛乳業"), (2331, "李寧"), 
+            (2333, "長城汽車"), (2382, "舜宇光學科技"), (2388, "中銀香港"), (2628, "中國人壽"), (3690, "美團-W"), 
+            (3968, "招商銀行"), (3988, "中國銀行"), (6030, "中信證券"), (9618, "京東集團-SW"), (9868, "小鵬汽車-W"), 
+            (9888, "百度集團-SW"), (9961, "攜程集團-S"), (9988, "阿里巴巴-W"), (9999, "網易-S")
+        ]
+        for code, name in core_list:
+            pure_code = f"{code:04d}"
+            ticker = f"{pure_code}.HK"
+            backup_tickers.append(ticker)
+            if pure_code not in name_dict:
+                name_dict[pure_code] = name
+        return backup_tickers, name_dict
         
-    return shortlist
+    return shortlist, name_dict
 
 # ==========================================
 # 🚀 第二階段：精準分析與發送
@@ -87,14 +97,13 @@ def fetch_hk_shortlist_auto():
 def scan_all_hong_kong_market_fast():
     start_time = time.time()
     
-    shortlist = fetch_hk_shortlist_auto()
+    shortlist, name_dict = fetch_hk_shortlist_auto()
     
     print(f"\n🚀 【深度分析階段】正在分析 {len(shortlist)} 檔核心港股最近 2 個交易日的 K 線...")
     valid_active_stocks = []
     
     shortlist_str = " ".join(shortlist)
     try:
-        # 下載最近 2 天的歷史數據 (如果今天是週六，yf 會自動抓週四與週五的資料，完美銜接！)
         df_detailed = yf.download(shortlist_str, period="2d", group_by="ticker", progress=False, ignore_tz=True)
         
         for ticker in shortlist:
@@ -117,11 +126,13 @@ def scan_all_hong_kong_market_fast():
                 turnover = today_volume * today_close
                 change_percent = ((today_close - prev_close) / prev_close) * 100
                 
-                # 在這裡做二次流動性檢查（適用於週末回溯時過濾掉週五成交量不夠的股票）
                 if today_close >= 1.0 and turnover >= 8000000:
                     pure_code = ticker.split('.')[0]
+                    stock_name = name_dict.get(pure_code, "未知名稱")
+                    
                     valid_active_stocks.append({
                         "id": pure_code,
+                        "name": stock_name,
                         "close": today_close,
                         "high": today_high,
                         "change": change_percent,
@@ -138,33 +149,41 @@ def scan_all_hong_kong_market_fast():
         return
 
     # ------------------------------------------
-    # 📊 策略篩選與 TG 發送
+    # 📊 策略篩選與整合單一訊息
     # ------------------------------------------
     today_str = datetime.datetime.now().strftime("%Y-%m-%d")
     master_df = pd.DataFrame(valid_active_stocks)
 
-    # 策略一：爆量突破收最高 (漲幅 >= 5%, 收盤接近最高價)
+    # 🔔 初始化整合型訊息內容
+    full_report_msg = f"📋 *【港股量價策略盤後報告】* ({today_str})\n"
+    full_report_msg += "========================\n\n"
+
+    # 1. 處理策略一：爆量突破收最高
     breakout_cond = (master_df["change"] >= 5.0) & ((master_df["high"] - master_df["close"]) <= (master_df["close"] * 0.005))
     breakout_df = master_df[breakout_cond].sort_values(by="change", ascending=False).head(5)
 
-    msg_1 = f"🚀 *【全港股突破警示：強勢收最高】* ({today_str})\n（已啟動週末/休市自動回溯相容機制）\n\n"
+    full_report_msg += "🚀 *一、突破警示：強勢收最高 Top 5*\n"
     if not breakout_df.empty:
         for _, row in breakout_df.iterrows():
-            msg_1 += f"📌 *{row['id']}*\n💰 價格：`{row['close']:.2f} HKD` (`+{row['change']:.2f}%`)\n📊 成交額：`{row['turnover']/1000000:.1f}M HKD`\n------------------------\n"
+            full_report_msg += f"📌 *{row['id']} {row['name']}*\n💰 價格：`{row['close']:.2f} HKD` (`+{row['change']:.2f}%`)\n📊 成交額：`{row['turnover']/1000000:.1f}M HKD`\n"
     else:
-        msg_1 += "該交易區間暫無符合「強勢突破收最高」標的。\n"
+        full_report_msg += "👉 _今日暫無符合「強勢突破收最高」標的。_\n"
+        
+    full_report_msg += "\n========================\n\n"
 
-    # 策略二：成交額 Top 5
+    # 2. 處理策略二：成交額 Top 5
     volume_surge_df = master_df[master_df["change"] > 0.0].sort_values(by="turnover", ascending=False).head(5)
-    msg_2 = f"📊 *【全港股資金聚焦：成交額 Top 5】* ({today_str})\n\n"
+    
+    full_report_msg += "📊 *二、資金聚焦：成交額 Top 5*\n"
     if not volume_surge_df.empty:
         for _, row in volume_surge_df.iterrows():
-            msg_2 += f"🔥 *{row['id']}*\n💰 收盤價：`{row['close']:.2f} HKD` (`+{row['change']:.2f}%`)\n💸 今日成交額：`{row['turnover']/1000000:.1f}M HKD`\n------------------------\n"
+            full_report_msg += f"🔥 *{row['id']} {row['name']}*\n💰 收盤價：`{row['close']:.2f} HKD` (`+{row['change']:.2f}%`)\n💸 今日成交額：`{row['turnover']/1000000:.1f}M HKD`\n"
+    else:
+        full_report_msg += "👉 _今日暫無符合條件之標的。_\n"
 
-    send_tg(msg_1)
-    time.sleep(1)
-    send_tg(msg_2)
-    print(f"🎉 任務順利結束！總花費時間: {time.time() - start_time:.1f} 秒")
+    # 3. 一鍵發送整份報告
+    send_tg(full_report_msg)
+    print(f"🎉 整合版報告發送順利結束！總花費時間: {time.time() - start_time:.1f} 秒")
 
 if __name__ == "__main__":
     scan_all_hong_kong_market_fast()
