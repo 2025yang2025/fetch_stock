@@ -39,7 +39,6 @@ def calculate_macd(close_series, fast=12, slow=26, signal=9):
     return macd_line, signal_line, hist
 
 def calculate_kd(df, n=9, m1=3, m2=3):
-    # 確保有足夠數據計算 KD
     if len(df) < n:
         return pd.Series([50]*len(df)), pd.Series([50]*len(df))
     low_min = df['Low'].rolling(window=n).min()
@@ -101,7 +100,7 @@ def check_strat1_resonance(df_60m, df_daily, df_weekly):
     return False
 
 def check_oversold_rebound(df_daily):
-    """ 策略二：季線跌深負乖離 × KD金叉 (此處沿用原代碼註解的策略二命名) """
+    """ 策略二：季線跌深負乖離 × KD金叉 """
     try:
         if df_daily.empty or len(df_daily) < 60: return False
         c_daily = df_daily['Close'].squeeze().astype(float)
@@ -155,6 +154,40 @@ def check_extreme_drop_volume_up(df_daily):
         pass
     return False
 
+def check_breakout_volume_up(df_daily):
+    """ 新增策略：關鍵均線多頭突破 × 量能倍增 (帶量突破) """
+    try:
+        if df_daily.empty or len(df_daily) < 20: return False
+        
+        c_daily = df_daily['Close'].squeeze().astype(float)
+        v_daily = df_daily['Volume'].squeeze().astype(float)
+        
+        ma20 = c_daily.rolling(window=20).mean()
+        close_today = c_daily.iloc[-1]
+        close_yesterday = c_daily.iloc[-2]
+        ma20_today = ma20.iloc[-1]
+        ma20_yesterday = ma20.iloc[-2]
+        
+        price_break_cond = (close_today > ma20_today) and (close_yesterday <= ma20_yesterday or (close_today - close_yesterday) / close_yesterday > 0.02)
+        if not price_break_cond: return False, 0.0
+        
+        v_ma5 = v_daily.rolling(window=5).mean().iloc[-1]
+        volume_today = v_daily.iloc[-1]
+        volume_cond = volume_today > (v_ma5 * 1.5)
+        if not volume_cond: return False, 0.0
+        
+        k_series, d_series = calculate_kd(df_daily)
+        k_today = k_series.iloc[-1]
+        d_today = d_series.iloc[-1]
+        kd_cond = (k_today > d_today) and (k_today < 75)
+        
+        if kd_cond:
+            volume_ratio = volume_today / v_ma5 if v_ma5 > 0 else 1.0
+            return True, volume_ratio
+    except Exception:
+        pass
+    return False, 0.0
+
 # ==========================================
 # ⚡ 全港股極速粗篩（流動性過濾與中文對照）
 # ==========================================
@@ -186,7 +219,6 @@ def fetch_hk_shortlist_auto():
                 trade = float(row['trade'])      
                 turnover = float(row['amount'])  
                 
-                # 基礎門檻粗篩
                 if trade >= 1.0 and turnover >= 8000000:
                     shortlist.append(ticker)
         except:
@@ -219,32 +251,26 @@ def scan_all_hong_kong_market_fast():
     start_time = time.time()
     
     shortlist, name_dict = fetch_hk_shortlist_auto()
-    print(f"\n🚀 【深度分析階段】正在下載與分析 {len(shortlist)} 檔標的之 60分K/日K/週K 數據...")
+    print(f"\n🚀 【深度分析階段】正在下載與分析 {len(shortlist)} 檔標的之 多週期 數據...")
     
-    # 儲存命中各核心策略的結果
-    hit_strat1 = []
-    hit_strat2 = []
-    hit_strat3 = []
-    hit_strat4 = []
+    hit_strat1 = []  # 突破收最高
+    hit_strat2 = []  # 三頻共振
+    hit_strat3 = []  # 季線負乖離
+    hit_strat4 = []  # 均線同步糾結
+    hit_strat5 = []  # 新增：帶量突破月線 (帶 volume_ratio)
     
-    # 為提高穩定性與速度，此處採單檔分流下載與技術型態檢測
     for ticker in shortlist:
         try:
             pure_code = ticker.split('.')[0]
             stock_name = name_dict.get(pure_code, "未知名稱")
             
-            # 1. 抓取多週期數據
-            # 60分K 需要近期的 bar（取 1個月內足夠算 20 MA、KD、MACD）
             df_60m = yf.download(ticker, period="1mo", interval="60m", progress=False, ignore_tz=True)
-            # 日K 取 6個月（滿足策略二 60日均線）
             df_daily = yf.download(ticker, period="6mo", interval="1d", progress=False, ignore_tz=True)
-            # 週K 取 1年
             df_weekly = yf.download(ticker, period="1y", interval="1wk", progress=False, ignore_tz=True)
             
             if df_daily.empty or len(df_daily) < 2:
                 continue
                 
-            # 基本即時數據計算（做發送呈現用）
             prev_close = df_daily["Close"].squeeze().astype(float).iloc[-2]
             today_close = df_daily["Close"].squeeze().astype(float).iloc[-1]
             today_high = df_daily["High"].squeeze().astype(float).iloc[-1]
@@ -260,28 +286,32 @@ def scan_all_hong_kong_market_fast():
                 "turnover": turnover
             }
 
-            # 2. 核心策略多重條件檢測
-            # 策略 A：原「爆量突破收最高」
+            # 1. 強勢收最高
             is_breakout_highest = (change_percent >= 5.0) and ((today_high - today_close) <= (today_close * 0.005))
             if is_breakout_highest:
                 hit_strat1.append(stock_info)
                 
-            # 策略一：原版多週期三頻共振
+            # 2. 三頻共振
             if check_strat1_resonance(df_60m, df_daily, df_weekly):
                 hit_strat2.append(stock_info)
                 
-            # 策略二：季線跌深負乖離 × KD金叉
+            # 3. 季線負乖離
             if check_oversold_rebound(df_daily):
                 hit_strat3.append(stock_info)
                 
-            # 策略三：多週期同步均線糾結
+            # 4. 多週期均線糾結
             if check_multi_timeframe_tangling(df_60m, df_daily, df_weekly):
                 hit_strat4.append(stock_info)
                 
-            # 註：此處可依需求增加對 check_extreme_drop_volume_up (策略四) 的檢測分流
+            # 5. 新增：關鍵均線多頭突破 × 量能倍增 (處理回傳的雙值)
+            is_breakout_vol, vol_ratio = check_breakout_volume_up(df_daily)
+            if is_breakout_vol:
+                # 把量能放大倍數寫入資料結構以利後續排序
+                stock_info_vol = stock_info.copy()
+                stock_info_vol["vol_ratio"] = vol_ratio
+                hit_strat5.append(stock_info_vol)
                 
-        except Exception as e:
-            # 個股計算異常則跳過，不中斷主流程
+        except Exception:
             continue
 
     # ==========================================
@@ -291,10 +321,9 @@ def scan_all_hong_kong_market_fast():
     full_report_msg = f"📋 *【港股多週期核心策略綜合報告】* ({today_str})\n"
     full_report_msg += "========================\n\n"
 
-    # --- 策略 A 顯示 ---
+    # --- 一、強勢動能：突破收最高 ---
     full_report_msg += "🚀 *一、強勢動能：突破收最高*\n"
     if hit_strat1:
-        # 按漲幅排序取前 5
         hit_strat1_sorted = sorted(hit_strat1, key=lambda x: x['change'], reverse=True)[:5]
         for s in hit_strat1_sorted:
             full_report_msg += f"📌 *{s['id']} {s['name']}*\n💰 價格：`{s['close']:.2f} HKD` (`+{s['change']:.2f}%`)\n📊 成交額：`{s['turnover']/1000000:.1f}M HKD`\n"
@@ -302,7 +331,7 @@ def scan_all_hong_kong_market_fast():
         full_report_msg += "👉 _今日暫無符合標的。_\n"
     full_report_msg += "\n------------------------\n\n"
 
-    # --- 策略一顯示 ---
+    # --- 二、三頻共振 ---
     full_report_msg += "🎯 *二、三頻共振：MACD多週期 × KD低金*\n"
     if hit_strat2:
         for s in hit_strat2[:5]:
@@ -311,7 +340,7 @@ def scan_all_hong_kong_market_fast():
         full_report_msg += "👉 _今日暫無符合標的。_\n"
     full_report_msg += "\n------------------------\n\n"
 
-    # --- 策略二顯示 ---
+    # --- 三、超跌反彈 ---
     full_report_msg += "📉 *三、超跌反彈：季線負乖離 × KD金叉*\n"
     if hit_strat3:
         for s in hit_strat3[:5]:
@@ -320,11 +349,22 @@ def scan_all_hong_kong_market_fast():
         full_report_msg += "👉 _今日暫無符合標的。_\n"
     full_report_msg += "\n------------------------\n\n"
 
-    # --- 策略三顯示 ---
+    # --- 四、蓄勢待發 ---
     full_report_msg += "🌀 *四、蓄勢待發：多週期均線同步糾結*\n"
     if hit_strat4:
         for s in hit_strat4[:5]:
             full_report_msg += f"📦 *{s['id']} {s['name']}*\n💰 價格：`{s['close']:.2f} HKD` (`{s['change']:.2f}%`)\n"
+    else:
+        full_report_msg += "👉 _今日暫無符合標的。_\n"
+    full_report_msg += "\n------------------------\n\n"
+
+    # --- 五、全新增加：帶量突破 ---
+    full_report_msg += "⚡ *五、帶量突破：關鍵均線突破 × 量能倍增*\n"
+    if hit_strat5:
+        # 依照量能放大倍數 (vol_ratio) 由大到小排序，取前 5 名
+        hit_strat5_sorted = sorted(hit_strat5, key=lambda x: x['vol_ratio'], reverse=True)[:5]
+        for s in hit_strat5_sorted:
+            full_report_msg += f"📈 *{s['id']} {s['name']}*\n💰 價格：`{s['close']:.2f} HKD` (`{s['change']:.2f}%`)\n📊 量能爆發：`{s['vol_ratio']:.2f} 倍` (相對5日均量)\n"
     else:
         full_report_msg += "👉 _今日暫無符合標的。_\n"
     
