@@ -1,11 +1,39 @@
+import sys
+import json
+import requests
 import pandas as pd
 import yfinance as yf
-import requests
-import json
 from datetime import datetime
 
 # ==========================================
-# ⚡ 1. 全港股極速粗篩（修復新浪 API 阻擋問題）
+# Telegram 推送設定 (請替換為你的 Token 與 Chat ID)
+# ==========================================
+TG_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TG_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+
+def send_telegram_message(message):
+    if not TG_BOT_TOKEN or TG_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
+        print("⚠️ 未設定 Telegram Bot Token，僅印出訊息：\n")
+        print(message)
+        return
+        
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TG_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=10)
+        if res.status_code == 200:
+            print("✅ Telegram 訊息推播成功！")
+        else:
+            print(f"❌ Telegram 推播失敗，狀態碼：{res.status_code}, 內容：{res.text}")
+    except Exception as e:
+        print(f"❌ Telegram 發送異常: {e}")
+
+# ==========================================
+# ⚡ 1. 全港股極速粗篩（修復 API 阻擋與 JSONP 解析）
 # ==========================================
 def fetch_hk_shortlist_auto():
     print("🌐 正在抓取港股流動性數據並建立中文名稱字典...")
@@ -57,7 +85,7 @@ def fetch_hk_shortlist_auto():
     if shortlist:
         print(f"✅ 成功獲取動態全港股股票池：共 {len(shortlist)} 檔標的")
     else:
-        print("❌ 警告：全港股 API 抓取失敗，退回核心備用池！")
+        print("❌ 警告：全港股 API 抓取失敗，退回 12 支核心備用池！")
         backup_tickers = []
         core_list = [
             (1, "長江和記"), (5, "匯豐控股"), (388, "香港交易所"), (700, "騰訊控股"), 
@@ -75,7 +103,7 @@ def fetch_hk_shortlist_auto():
     return shortlist, name_dict
 
 # ==========================================
-# 📊 2. 策略計算 logic
+# 📊 2. 技術指標與策略邏輯
 # ==========================================
 def calculate_kd(df, n=9):
     low_list = df['Low'].rolling(window=n).min()
@@ -96,7 +124,7 @@ def calculate_kd(df, n=9):
     return df
 
 def run_strategies(shortlist, name_dict):
-    print("📈 開始下載日 K 線資料與策略運算...")
+    print("📈 開始下載日 K 線資料並計算策略...")
     try:
         data = yf.download(shortlist, period="1y", group_by='ticker', threads=True)
     except Exception as e:
@@ -104,10 +132,10 @@ def run_strategies(shortlist, name_dict):
         return {}
 
     results = {
-        "strategy1": [], # 低檔爆量股
-        "strategy2": [], # 三頻共振
-        "strategy3": [], # 蓄勢待發
-        "strategy4": []  # 帶量突破
+        "strategy_1": [], # 低檔爆量股
+        "strategy_2": [], # 三頻共振
+        "strategy_3": [], # 蓄勢待發
+        "strategy_4": []  # 帶量突破
     }
 
     for ticker in shortlist:
@@ -116,19 +144,17 @@ def run_strategies(shortlist, name_dict):
             name = name_dict.get(pure_code, "未知")
             
             df = data[ticker].dropna().copy() if len(shortlist) > 1 else data.dropna().copy()
-            if len(df) < 120:  # 半年約需 120 根 K 線
+            if len(df) < 120:  # 計算 120 日高低位階
                 continue
 
-            # 計算均線
+            # 均線計算
             df['MA5'] = df['Close'].rolling(5).mean()
             df['MA10'] = df['Close'].rolling(10).mean()
             df['MA20'] = df['Close'].rolling(20).mean()
             df['MA60'] = df['Close'].rolling(60).mean()
-            
-            # 成交量均線
             df['Vol_MA5'] = df['Volume'].rolling(5).mean()
 
-            # MACD 與 KD
+            # MACD & KD
             df['EMA12'] = df['Close'].ewm(span=12, adjust=False).mean()
             df['EMA26'] = df['Close'].ewm(span=26, adjust=False).mean()
             df['DIF'] = df['EMA12'] - df['EMA26']
@@ -163,7 +189,7 @@ def run_strategies(shortlist, name_dict):
             vol_surge = curr['Volume'] >= (prev['Vol_MA5'] * 2.5) if prev['Vol_MA5'] > 0 else False
 
             if position_120 <= 0.30 and vol_surge and is_red_k:
-                results["strategy1"].append(info)
+                results["strategy_1"].append(info)
 
             # ----------------------------------------------------
             # 🎯 策略二：三頻共振 (MACD多週期 × KD低金)
@@ -171,7 +197,7 @@ def run_strategies(shortlist, name_dict):
             kd_golden = (prev['K'] < prev['D']) and (curr['K'] > curr['D']) and (curr['K'] < 50)
             macd_bull = curr['DIF'] > curr['DEA'] and curr['MACD'] > 0
             if kd_golden and macd_bull:
-                results["strategy2"].append(info)
+                results["strategy_2"].append(info)
 
             # ----------------------------------------------------
             # 🌀 策略三：蓄勢待發 (多週期均線同步糾結)
@@ -180,7 +206,7 @@ def run_strategies(shortlist, name_dict):
             ma_max = max(ma_list)
             ma_min = min(ma_list)
             if ma_min > 0 and ((ma_max - ma_min) / ma_min) <= 0.02:
-                results["strategy3"].append(info)
+                results["strategy_3"].append(info)
 
             # ----------------------------------------------------
             # ⚡ 策略四：帶量突破 (關鍵均線突破 × 量能倍增)
@@ -188,7 +214,7 @@ def run_strategies(shortlist, name_dict):
             break_ma = (prev['Close'] < prev['MA20'] and curr['Close'] > curr['MA20'])
             vol_double = curr['Volume'] >= (prev['Vol_MA5'] * 2.0) if prev['Vol_MA5'] > 0 else False
             if break_ma and vol_double:
-                results["strategy4"].append(info)
+                results["strategy_4"].append(info)
 
         except Exception as e:
             continue
@@ -196,58 +222,66 @@ def run_strategies(shortlist, name_dict):
     return results
 
 # ==========================================
-# 📱 3. 輸出 Telegram 格式文字
+# 📱 3. 格式化 Telegram 報告訊息
 # ==========================================
-def format_telegram_report(results, report_date):
+def format_telegram_report(results, report_date, target_strategy="all"):
     msg = f"📋【港股多週期核心策略綜合報告】 ({report_date})\n"
     msg += "=============================\n\n"
 
-    # 策略一
-    msg += "💥 一、低檔爆量股：半年位階 ≤ 30% × 2.5倍量 × 紅K\n"
-    if results.get("strategy1"):
-        for item in results["strategy1"]:
-            msg += f"📦 {item['code']} {item['name']}\n"
-            msg += f"💰 價格：{item['price']:.2f} HKD ({item['pct_change']:+.2f}%)\n\n"
-    else:
-        msg += "👉 今日暫無符合標的。\n\n"
-    msg += "-----------------------------\n\n"
+    if target_strategy in ["all", "strategy_1"]:
+        msg += "💥 一、低檔爆量股：半年位階 ≤ 30% × 2.5倍量 × 紅K\n"
+        if results.get("strategy_1"):
+            for item in results["strategy_1"]:
+                msg += f"📦 {item['code']} {item['name']}\n"
+                msg += f"💰 價格：{item['price']:.2f} HKD ({item['pct_change']:+.2f}%)\n\n"
+        else:
+            msg += "👉 今日暫無符合標的。\n\n"
+        msg += "-----------------------------\n\n"
 
-    # 策略二
-    msg += "🎯 二、三頻共振：MACD多週期 × KD低金\n"
-    if results.get("strategy2"):
-        for item in results["strategy2"]:
-            msg += f"📦 {item['code']} {item['name']}\n"
-            msg += f"💰 價格：{item['price']:.2f} HKD ({item['pct_change']:+.2f}%)\n\n"
-    else:
-        msg += "👉 今日暫無符合標的。\n\n"
-    msg += "-----------------------------\n\n"
+    if target_strategy in ["all", "strategy_2"]:
+        msg += "🎯 二、三頻共振：MACD多週期 × KD低金\n"
+        if results.get("strategy_2"):
+            for item in results["strategy_2"]:
+                msg += f"📦 {item['code']} {item['name']}\n"
+                msg += f"💰 價格：{item['price']:.2f} HKD ({item['pct_change']:+.2f}%)\n\n"
+        else:
+            msg += "👉 今日暫無符合標的。\n\n"
+        msg += "-----------------------------\n\n"
 
-    # 策略三
-    msg += "🌀 三、蓄勢待發：多週期均線同步糾結\n"
-    if results.get("strategy3"):
-        for item in results["strategy3"]:
-            msg += f"📦 {item['code']} {item['name']}\n"
-            msg += f"💰 價格：{item['price']:.2f} HKD ({item['pct_change']:+.2f}%)\n\n"
-    else:
-        msg += "👉 今日暫無符合標的。\n\n"
-    msg += "-----------------------------\n\n"
+    if target_strategy in ["all", "strategy_3"]:
+        msg += "🌀 三、蓄勢待發：多週期均線同步糾結\n"
+        if results.get("strategy_3"):
+            for item in results["strategy_3"]:
+                msg += f"📦 {item['code']} {item['name']}\n"
+                msg += f"💰 價格：{item['price']:.2f} HKD ({item['pct_change']:+.2f}%)\n\n"
+        else:
+            msg += "👉 今日暫無符合標的。\n\n"
+        msg += "-----------------------------\n\n"
 
-    # 策略四
-    msg += "⚡ 四、帶量突破：關鍵均線突破 × 量能倍增\n"
-    if results.get("strategy4"):
-        for item in results["strategy4"]:
-            msg += f"📦 {item['code']} {item['name']}\n"
-            msg += f"💰 價格：{item['price']:.2f} HKD ({item['pct_change']:+.2f}%)\n\n"
-    else:
-        msg += "👉 今日暫無符合標的。\n\n"
+    if target_strategy in ["all", "strategy_4"]:
+        msg += "⚡ 四、帶量突破：關鍵均線突破 × 量能倍增\n"
+        if results.get("strategy_4"):
+            for item in results["strategy_4"]:
+                msg += f"📦 {item['code']} {item['name']}\n"
+                msg += f"💰 價格：{item['price']:.2f} HKD ({item['pct_change']:+.2f}%)\n\n"
+        else:
+            msg += "👉 今日暫無符合標的。\n\n"
 
     msg += "============================="
     return msg
 
-# 主流程測試
+# ==========================================
+# 🚀 4. 主流程
+# ==========================================
 if __name__ == "__main__":
+    # 解析傳入參數 (例如 python fetch_stock.py strategy_1)
+    target_strategy = sys.argv[1] if len(sys.argv) > 1 else "all"
+    
     shortlist, name_dict = fetch_hk_shortlist_auto()
     results = run_strategies(shortlist, name_dict)
+    
     today_str = datetime.now().strftime("%Y-%m-%d")
-    report = format_telegram_report(results, today_str)
-    print(report)
+    report = format_telegram_report(results, today_str, target_strategy)
+    
+    # 推送到 Telegram
+    send_telegram_message(report)
