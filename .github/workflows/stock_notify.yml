@@ -1,18 +1,10 @@
-name: Taiwan Stock Advanced Strategies Bot
+name: HK Stock Strategy Tracker
 
 on:
-  schedule:
-    # 1. 策略一：台北時間 14:37 (UTC 06:37) 週一至週五
-    - cron: '37 6 * * 1-5'
-    # 2. 策略二：台北時間 17:05 (UTC 09:05) 週一至週五
-    - cron: '5 9 * * 1-5'
-    # 3. 策略三：台北時間 週六 10:00 (UTC 02:00)
-    - cron: '0 2 * * 6'
-    
-  workflow_dispatch: # 手動觸發時，跳出下拉選單供你選擇（加進了「全部一起跑」的選項）
+  workflow_dispatch:
     inputs:
-      strategy_to_run:
-        description: '請選擇要手動測試的策略'
+      strategy_choice:
+        description: '選擇執行的策略 (all / strategy_1 / strategy_2 / strategy_3 / strategy_4)'
         required: true
         default: 'all'
         type: choice
@@ -21,70 +13,70 @@ on:
           - strategy_1
           - strategy_2
           - strategy_3
+          - strategy_4
+  schedule:
+    # 範例定時排程 (UTC 時間，請依需求自行修改時間)
+    - cron: '37 6 * * 1-5'   # 策略 1
+    - cron: '5 9 * * 1-5'    # 策略 2
+    - cron: '0 2 * * 1-5'    # 策略 3
+    - cron: '30 9 * * 1-5'   # 策略 4
 
 jobs:
-  run-stock-bot:
+  run-strategy:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-    # ==========================================
-    # 🛠️ 修正重點：在這裡補上 yfinance 安裝
-    # ==========================================
-    - name: Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install requests pandas finmind yfinance
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas yfinance requests
 
-    # ==========================================
-    # 🚀 根據時間或手動選擇，自動判定要帶什麼參數執行 Python
-    # ==========================================
-    - name: Determine Run Command
-      id: set-command
-      run: |
-        # 預設值：如果不符合任何排程，也沒有特殊手動指定，就全跑
-        CMD="python fetch_stock.py"
-        
-        # 1. 判斷如果是手動觸發 (workflow_dispatch)
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          CHOICE="${{ github.event.inputs.strategy_to_run }}"
-          if [ "$CHOICE" = "strategy_1" ]; then
-            CMD="python fetch_stock.py strategy_1"
-          elif [ "$CHOICE" = "strategy_2" ]; then
-            CMD="python fetch_stock.py strategy_2"
-          elif [ "$CHOICE" = "strategy_3" ]; then
-            CMD="python fetch_stock.py strategy_3"
-          else
-            CMD="python fetch_stock.py"
-          fi
+      - name: Determine Run Command
+        id: set-cmd
+        run: |
+          # 預設全跑
+          CMD="python fetch_stock.py"
           
-        # 2. 判斷如果是定時排程觸發 (schedule)
-        elif [ "${{ github.event_name }}" = "schedule" ]; then
+          EVENT_NAME="${{ github.event_name }}"
+          CHOICE="${{ github.event.inputs.strategy_choice }}"
           CRON="${{ github.event.schedule }}"
-          if [ "$CRON" = "37 6 * * 1-5" ]; then
-            CMD="python fetch_stock.py strategy_1"
-          elif [ "$CRON" = "5 9 * * 1-5" ]; then
-            CMD="python fetch_stock.py strategy_2"
-          elif [ "$CRON" = "0 2 * * 6" ]; then
-            CMD="python fetch_stock.py strategy_3"
-          fi
-        fi
-        
-        # 將最終決定的指令寫入 GitHub 環境變數中
-        echo "run_cmd=$CMD" >> $GITHUB_OUTPUT
 
-    # ==========================================
-    # 執行選定的策略（不管哪一個，通通在這一版一鍵處理完畢）
-    # ==========================================
-    - name: Execute Stock Bot Strategy
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }} 
-      run: ${{ steps.set-command.outputs.run_cmd }}
+          # 1. 手動觸發判斷
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$CHOICE" = "strategy_1" ]; then
+              CMD="python fetch_stock.py strategy_1"
+            elif [ "$CHOICE" = "strategy_2" ]; then
+              CMD="python fetch_stock.py strategy_2"
+            elif [ "$CHOICE" = "strategy_3" ]; then
+              CMD="python fetch_stock.py strategy_3"
+            elif [ "$CHOICE" = "strategy_4" ]; then
+              CMD="python fetch_stock.py strategy_4"
+            else
+              CMD="python fetch_stock.py all"
+            fi
+            
+          # 2. 排程觸發判斷
+          elif [ "$EVENT_NAME" = "schedule" ]; then
+            if [ "$CRON" = "37 6 * * 1-5" ]; then
+              CMD="python fetch_stock.py strategy_1"
+            elif [ "$CRON" = "5 9 * * 1-5" ]; then
+              CMD="python fetch_stock.py strategy_2"
+            elif [ "$CRON" = "0 2 * * 1-5" ]; then
+              CMD="python fetch_stock.py strategy_3"
+            elif [ "$CRON" = "30 9 * * 1-5" ]; then
+              CMD="python fetch_stock.py strategy_4"
+            fi
+          fi
+
+          echo "run_cmd=$CMD" >> $GITHUB_OUTPUT
+
+      - name: Execute Strategy Script
+        run: |
+          ${{ steps.set-cmd.outputs.run_cmd }}
