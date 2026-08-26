@@ -8,7 +8,7 @@ import yfinance as yf
 from datetime import datetime
 
 # ==========================================
-# ⚙️ 設定檔 (可直接填寫或留空讀取環境變數)
+# ⚙️ 設定檔 (從環境變數讀取 Telegram 設定)
 # ==========================================
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
@@ -294,7 +294,7 @@ def check_low_position_volume_surge(df_daily):
     return False
 
 # ==========================================
-# 🛠️ 安全分批下載函數 (防止 API 限流)
+# 🛠️ 安全分批下載函數
 # ==========================================
 def safe_batch_download(tickers, period, interval, chunk_size=40):
     all_dfs = []
@@ -306,7 +306,7 @@ def safe_batch_download(tickers, period, interval, chunk_size=40):
                 all_dfs.append(df)
         except Exception as e:
             print(f"⚠️ 下載批次 {i}~{i+chunk_size} 失敗: {e}")
-        time.sleep(1) # 避開 API 頻率限制
+        time.sleep(1)
     
     if not all_dfs:
         return pd.DataFrame()
@@ -315,12 +315,7 @@ def safe_batch_download(tickers, period, interval, chunk_size=40):
 # ==========================================
 # 🚀 5. 主程式流程
 # ==========================================
-# (前面計算邏輯保持不變，修改最底部的訊息建構與發送段落)
-
 if __name__ == "__main__":
-    import sys
-
-    # 取得傳入的策略參數，若無預設為 'all'
     run_target = sys.argv[1].lower() if len(sys.argv) > 1 else "all"
 
     now_hk = pd.Timestamp.now(tz='UTC').tz_convert('Asia/Hong_Kong')
@@ -328,11 +323,106 @@ if __name__ == "__main__":
 
     print(f"🚀 啟動【港股策略篩選報告】(目標: {run_target})...")
     
-    # ...[中間 safe_batch_download 與 策略1~8 計算邏輯不變]...
+    # 提前宣告全域相容的結果容器，避免 NameError
+    strat1_matches, strat2_matches, strat3_matches, strat4_matches = [], [], [], []
+    strat5_matches, strat6_matches, strat7_matches, strat8_matches = [], [], [], []
+    tech_candidates_union = set()
+
+    tech_scan_pool = fetch_hk_shortlist_auto()
+    if not tech_scan_pool:
+        sys.exit()
+
+    print("⏳ 步驟 1: 下載全市場日 K 數據 (過濾流動性門檻)...")
+    full_df_daily = safe_batch_download(tech_scan_pool, period="1y", interval="1d")
+    
+    qualified_tickers = []
+    if not full_df_daily.empty:
+        for ticker in tech_scan_pool:
+            try:
+                df_ticker = full_df_daily.xs(ticker, axis=1, level=1) if len(tech_scan_pool) > 1 else full_df_daily
+                v_daily = df_ticker['Volume'].squeeze()
+                if len(v_daily) >= 20:
+                    qualified_tickers.append(ticker)
+            except Exception:
+                continue
+
+    print(f"🎯 通過門檻股票共 {len(qualified_tickers)} 檔。")
+
+    if qualified_tickers:
+        print("⏳ 步驟 2: 分批下載多週期 K 線資料 (30m, 60m, Weekly)...")
+        full_df_30m = safe_batch_download(qualified_tickers, period="1mo", interval="30m")
+        full_df_60m = safe_batch_download(qualified_tickers, period="1mo", interval="60m")
+        full_df_weekly = safe_batch_download(qualified_tickers, period="2y", interval="1wk")
+
+        print("⏳ 步驟 3: 執行策略 1~7 技術面檢測...")
+        for ticker in qualified_tickers:
+            try:
+                df_d = full_df_daily.xs(ticker, axis=1, level=1) if len(qualified_tickers) > 1 else full_df_daily
+                df_m30 = full_df_30m.xs(ticker, axis=1, level=1) if len(qualified_tickers) > 1 else full_df_30m
+                df_m60 = full_df_60m.xs(ticker, axis=1, level=1) if len(qualified_tickers) > 1 else full_df_60m
+                df_w = full_df_weekly.xs(ticker, axis=1, level=1) if len(qualified_tickers) > 1 else full_df_weekly
+
+                if df_d.empty or df_m30.empty or df_m60.empty or df_w.empty:
+                    continue
+
+                name_zh = DYNAMIC_STOCK_NAMES.get(ticker, "")
+                stock_label = f"<code>{ticker}</code>(<i>{name_zh}</i>)" if name_zh else f"<code>{ticker}</code>"
+
+                # 策略一
+                if check_strat1_resonance(df_m30, df_m60):
+                    strat1_matches.append(stock_label)
+                    tech_candidates_union.add(ticker)
+                    
+                # 策略二
+                if check_strat2_resonance(df_m60, df_d):
+                    strat2_matches.append(stock_label)
+                    tech_candidates_union.add(ticker)
+
+                # 策略三
+                if check_strat3_resonance(df_d, df_w):
+                    strat3_matches.append(stock_label)
+                    tech_candidates_union.add(ticker)
+
+                # 策略四
+                v_break = check_volume_breakout(df_d)
+                if v_break:
+                    strat4_matches.append(f"{stock_label}[量比:{v_break[1]:.1f}倍]")
+                    tech_candidates_union.add(ticker)
+
+                # 策略五
+                if check_extreme_drop_volume_up(df_d):
+                    strat5_matches.append(stock_label)
+                    tech_candidates_union.add(ticker)
+
+                # 策略六
+                if check_multi_timeframe_tangling(df_m60, df_d, df_w):
+                    strat6_matches.append(stock_label)
+                    tech_candidates_union.add(ticker)
+
+                # 策略七
+                low_vol = check_low_position_volume_surge(df_d)
+                if low_vol:
+                    strat7_matches.append(f"{stock_label}[位階:{low_vol[1]}%|量比:{low_vol[2]}倍]")
+                    tech_candidates_union.add(ticker)
+
+            except Exception:
+                continue
 
     # --------------------------------------------------------------------------
-    # 📝 根據傳入參數動態建構訊息
+    # 🔍 步驟 4: 執行【策略八】
     # --------------------------------------------------------------------------
+    if tech_candidates_union:
+        print(f"⏳ 步驟 4: 執行【策略八】(針對 1~7 策略共 {len(tech_candidates_union)} 檔技術標的檢測)...")
+        for ticker in sorted(tech_candidates_union):
+            is_mom_pass, mom_val = check_revenue_mom_growth(ticker)
+            time.sleep(0.1)
+
+            if is_mom_pass:
+                name_zh = DYNAMIC_STOCK_NAMES.get(ticker, "")
+                label = f"<code>{ticker}</code>(<i>{name_zh}</i>)[月增:{mom_val}%]" if name_zh else f"<code>{ticker}</code>[月增:{mom_val}%]"
+                strat8_matches.append(label)
+
+    # 📝 建構 Telegram 報告訊息
     hk_msg = f"🇭🇰 <b>【港股盤後策略選股報告】</b>\n"
     hk_msg += f"⏰ 時間: {hk_time_str}\n───────────────────\n\n"
 
