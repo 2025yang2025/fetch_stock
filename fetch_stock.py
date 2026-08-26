@@ -8,19 +8,22 @@ import yfinance as yf
 from datetime import datetime
 
 # ==========================================
+# ⚙️ 設定檔 (可直接填寫或留空讀取環境變數)
+# ==========================================
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
+
+# ==========================================
 # 📱 Telegram 推送模組 (自動切分長訊息)
 # ==========================================
 def send_telegram_message(message, max_length=3500):
-    bot_token = os.environ.get("TG_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TG_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
-
-    if not bot_token or bot_token == "YOUR_TELEGRAM_BOT_TOKEN":
-        print("⚠️ 未設定 Telegram Bot Token，僅印出訊息：\n")
+    if not TG_BOT_TOKEN or TG_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
+        print("⚠️ 未設定 Telegram Bot Token，僅在 Console 印出訊息：\n")
         print(message)
         return
 
-    bot_token = str(bot_token).strip()
-    chat_id = str(chat_id).strip()
+    bot_token = str(TG_BOT_TOKEN).strip()
+    chat_id = str(TG_CHAT_ID).strip()
     if bot_token.lower().startswith("bot"):
         bot_token = bot_token[3:]
 
@@ -97,7 +100,6 @@ def fetch_hk_shortlist_auto():
                     trade = float(row.get('trade', 0))
                     turnover = float(row.get('amount', 0))
                     
-                    # 股價 >= 1.0 且 當日成交額 >= 800萬 HKD
                     if trade >= 1.0 and turnover >= 8000000:
                         shortlist.append(ticker)
         except Exception as e:
@@ -126,9 +128,6 @@ def fetch_hk_shortlist_auto():
 # 📊 2. 營收月增檢測 (FinMind API)
 # ==========================================
 def check_revenue_mom_growth(ticker):
-    """
-    針對 1~7 策略篩選出的標的檢測營收月增 (MoM > 0%)
-    """
     try:
         code = ticker.split('.')[0]
         url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockMonthRevenue&data_id={code}"
@@ -295,6 +294,25 @@ def check_low_position_volume_surge(df_daily):
     return False
 
 # ==========================================
+# 🛠️ 安全分批下載函數 (防止 API 限流)
+# ==========================================
+def safe_batch_download(tickers, period, interval, chunk_size=40):
+    all_dfs = []
+    for i in range(0, len(tickers), chunk_size):
+        chunk = tickers[i:i + chunk_size]
+        try:
+            df = yf.download(chunk, period=period, interval=interval, progress=False, auto_adjust=True, threads=True)
+            if not df.empty:
+                all_dfs.append(df)
+        except Exception as e:
+            print(f"⚠️ 下載批次 {i}~{i+chunk_size} 失敗: {e}")
+        time.sleep(1) # 避開 API 頻率限制
+    
+    if not all_dfs:
+        return pd.DataFrame()
+    return pd.concat(all_dfs, axis=1)
+
+# ==========================================
 # 🚀 5. 主程式流程
 # ==========================================
 if __name__ == "__main__":
@@ -307,7 +325,7 @@ if __name__ == "__main__":
         sys.exit()
 
     print("⏳ 步驟 1: 下載全市場日 K 數據 (過濾流動性門檻)...")
-    full_df_daily = yf.download(tech_scan_pool, period="1y", interval="1d", progress=False, auto_adjust=True)
+    full_df_daily = safe_batch_download(tech_scan_pool, period="1y", interval="1d")
     
     qualified_tickers = []
     for ticker in tech_scan_pool:
@@ -325,10 +343,10 @@ if __name__ == "__main__":
     tech_candidates_union = set()
 
     if qualified_tickers:
-        print("⏳ 步驟 2: 批次下載多週期 K 線資料 (30m, 60m, Weekly)...")
-        full_df_30m = yf.download(qualified_tickers, period="1mo", interval="30m", progress=False, auto_adjust=True)
-        full_df_60m = yf.download(qualified_tickers, period="1mo", interval="60m", progress=False, auto_adjust=True)
-        full_df_weekly = yf.download(qualified_tickers, period="2y", interval="1wk", progress=False, auto_adjust=True)
+        print("⏳ 步驟 2: 分批下載多週期 K 線資料 (30m, 60m, Weekly)...")
+        full_df_30m = safe_batch_download(qualified_tickers, period="1mo", interval="30m")
+        full_df_60m = safe_batch_download(qualified_tickers, period="1mo", interval="60m")
+        full_df_weekly = safe_batch_download(qualified_tickers, period="2y", interval="1wk")
 
         print("⏳ 步驟 3: 執行策略 1~7 技術面檢測...")
         for ticker in qualified_tickers:
@@ -385,7 +403,7 @@ if __name__ == "__main__":
                 continue
 
     # --------------------------------------------------------------------------
-    # 🔍 步驟 4: 執行【策略八】(針對 1~7 策略出的標的過濾營收月增 MoM > 0%)
+    # 🔍 步驟 4: 執行【策略八】
     # --------------------------------------------------------------------------
     print(f"⏳ 步驟 4: 執行【策略八】(針對 1~7 策略共 {len(tech_candidates_union)} 檔技術標的檢測)...")
     for ticker in sorted(tech_candidates_union):
