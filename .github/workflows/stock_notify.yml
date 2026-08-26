@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       strategy_choice:
-        description: '選擇執行的策略 (all / strategy_1 / strategy_2 / strategy_3 / strategy_4)'
+        description: '選擇執行的策略'
         required: true
         default: 'all'
         type: choice
@@ -14,12 +14,13 @@ on:
           - strategy_2
           - strategy_3
           - strategy_4
+          - strategy_5
+          - strategy_6
+          - strategy_7
+          - strategy_8
   schedule:
-    # 範例定時排程 (UTC 時間，請依需求自行修改時間)
-    - cron: '37 6 * * 1-5'   # 策略 1
-    - cron: '5 9 * * 1-5'    # 策略 2
-    - cron: '0 2 * * 1-5'    # 策略 3
-    - cron: '30 9 * * 1-5'   # 策略 4
+    # UTC 時間：盤後 16:10 執行全套 (UTC 08:10)
+    - cron: '10 8 * * 1-5'
 
 jobs:
   run-strategy:
@@ -41,42 +42,20 @@ jobs:
       - name: Determine Run Command
         id: set-cmd
         run: |
-          # 預設全跑
-          CMD="python fetch_stock.py"
+          CMD="python fetch_stock.py all"
           
           EVENT_NAME="${{ github.event_name }}"
           CHOICE="${{ github.event.inputs.strategy_choice }}"
-          CRON="${{ github.event.schedule }}"
 
-          # 1. 手動觸發判斷
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            if [ "$CHOICE" = "strategy_1" ]; then
-              CMD="python fetch_stock.py strategy_1"
-            elif [ "$CHOICE" = "strategy_2" ]; then
-              CMD="python fetch_stock.py strategy_2"
-            elif [ "$CHOICE" = "strategy_3" ]; then
-              CMD="python fetch_stock.py strategy_3"
-            elif [ "$CHOICE" = "strategy_4" ]; then
-              CMD="python fetch_stock.py strategy_4"
-            else
-              CMD="python fetch_stock.py all"
-            fi
-            
-          # 2. 排程觸發判斷
-          elif [ "$EVENT_NAME" = "schedule" ]; then
-            if [ "$CRON" = "37 6 * * 1-5" ]; then
-              CMD="python fetch_stock.py strategy_1"
-            elif [ "$CRON" = "5 9 * * 1-5" ]; then
-              CMD="python fetch_stock.py strategy_2"
-            elif [ "$CRON" = "0 2 * * 1-5" ]; then
-              CMD="python fetch_stock.py strategy_3"
-            elif [ "$CRON" = "30 9 * * 1-5" ]; then
-              CMD="python fetch_stock.py strategy_4"
-            fi
+            CMD="python fetch_stock.py $CHOICE"
           fi
 
           echo "run_cmd=$CMD" >> $GITHUB_OUTPUT
 
       - name: Execute Strategy Script
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
           ${{ steps.set-cmd.outputs.run_cmd }}
