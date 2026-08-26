@@ -7,7 +7,7 @@ import pandas as pd
 import yfinance as yf
 
 # ==========================================
-# ⚙️ 設定檔 (從環境變數讀取 Telegram 設定)
+# ⚙️ 設定檔
 # ==========================================
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
@@ -27,10 +27,8 @@ def send_telegram_message(message, max_length=3500):
         bot_token = bot_token[3:]
 
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-
     lines = message.split("\n")
-    chunks = []
-    current_chunk = ""
+    chunks, current_chunk = [], ""
 
     for line in lines:
         if len(current_chunk) + len(line) + 1 > max_length:
@@ -42,11 +40,7 @@ def send_telegram_message(message, max_length=3500):
         chunks.append(current_chunk)
 
     for idx, chunk in enumerate(chunks):
-        payload = {
-            "chat_id": chat_id,
-            "text": chunk,
-            "parse_mode": "HTML"
-        }
+        payload = {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}
         try:
             res = requests.post(url, json=payload, timeout=10)
             if res.status_code == 200:
@@ -74,8 +68,7 @@ def fetch_hk_shortlist_auto():
         try:
             response = requests.get(url, headers=headers, timeout=5)
             text = response.text
-            left_idx = text.find("[")
-            right_idx = text.rfind("]")
+            left_idx, right_idx = text.find("["), text.rfind("]")
             if left_idx != -1 and right_idx != -1:
                 data_list = json.loads(text[left_idx:right_idx+1])
                 if not data_list: break
@@ -85,8 +78,7 @@ def fetch_hk_shortlist_auto():
                     if not pure_code.isdigit(): continue
                     ticker = f"{int(pure_code):04d}.HK"
                     DYNAMIC_STOCK_NAMES[ticker] = row.get('name', '未知')
-                    trade = float(row.get('trade', 0))
-                    turnover = float(row.get('amount', 0))
+                    trade, turnover = float(row.get('trade', 0)), float(row.get('amount', 0))
                     if trade >= 1.0 and turnover >= 8000000:
                         shortlist.append(ticker)
         except Exception:
@@ -166,8 +158,7 @@ def check_macd_up_and_kd_gold(df_single):
 def check_volume_breakout(df_daily):
     try:
         if df_daily.empty or len(df_daily) < 20: return False
-        c_daily = df_daily['Close'].squeeze().astype(float)
-        v_daily = df_daily['Volume'].squeeze().astype(float)
+        c_daily, v_daily = df_daily['Close'].squeeze().astype(float), df_daily['Volume'].squeeze().astype(float)
         ma20 = c_daily.rolling(window=20).mean()
         close_today, close_yesterday = c_daily.iloc[-1], c_daily.iloc[-2]
         if not ((close_today > ma20.iloc[-1]) and (close_yesterday <= ma20.iloc[-2] or (close_today - close_yesterday) / close_yesterday > 0.02)):
@@ -185,9 +176,7 @@ def check_volume_breakout(df_daily):
 def check_extreme_drop_volume_up(df_daily):
     try:
         if df_daily.empty or len(df_daily) < 20: return False
-        c_daily = df_daily['Close'].squeeze().astype(float)
-        o_daily = df_daily['Open'].squeeze().astype(float)
-        v_daily = df_daily['Volume'].squeeze().astype(float)
+        c_daily, o_daily, v_daily = df_daily['Close'].squeeze().astype(float), df_daily['Open'].squeeze().astype(float), df_daily['Volume'].squeeze().astype(float)
         rsi6 = calculate_rsi(c_daily, period=6).iloc[-1]
         v_ma5 = v_daily.rolling(window=5).mean().iloc[-1]
         if rsi6 < 20 and c_daily.iloc[-1] > o_daily.iloc[-1] and v_daily.iloc[-1] > v_ma5:
@@ -243,23 +232,22 @@ def safe_batch_download(tickers, period, interval, chunk_size=80):
     return pd.concat(all_dfs, axis=1) if all_dfs else pd.DataFrame()
 
 # ==========================================
-# 🚀 5. 主程式流程 (動態按需載入優化)
+# 🚀 5. 主程式流程 (全策略執行)
 # ==========================================
 if __name__ == "__main__":
-    run_target = sys.argv[1].lower() if len(sys.argv) > 1 else "all"
     now_hk = pd.Timestamp.now(tz='UTC').tz_convert('Asia/Hong_Kong')
     hk_time_str = now_hk.strftime('%Y-%m-%d %H:%M:%S')
 
-    print(f"🚀 啟動【港股策略篩選報告】(目標: {run_target})...")
+    print("🚀 啟動【港股盤後全策略篩選報告】...")
     
     strat1_matches, strat2_matches, strat3_matches, strat4_matches = [], [], [], []
     strat5_matches, strat6_matches, strat7_matches, strat8_matches = [], [], [], []
     tech_candidates_union = set()
 
     tech_scan_pool = fetch_hk_shortlist_auto()
-    if not tech_scan_pool: sys.exit()
+    if not tech_scan_pool:
+        sys.exit()
 
-    # 1. 永遠優先下載 Daily 數據 (體積小、速度極快)
     print("⏳ 步驟 1: 下載全市場日 K 數據...")
     full_df_daily = safe_batch_download(tech_scan_pool, period="1y", interval="1d")
     
@@ -275,74 +263,62 @@ if __name__ == "__main__":
 
     print(f"🎯 通過門檻股票共 {len(qualified_tickers)} 檔。")
 
-    # 2. 判斷目前選擇的策略需要哪些 K 線頻率 (動態按需載入)
-    need_30m = run_target in ["all", "strategy_1"]
-    need_60m = run_target in ["all", "strategy_1", "strategy_2", "strategy_6"]
-    need_weekly = run_target in ["all", "strategy_3", "strategy_6"]
-
-    full_df_30m, full_df_60m, full_df_weekly = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
     if qualified_tickers:
-        if need_30m:
-            print("⏳ 載入 30m K 線數據...")
-            full_df_30m = safe_batch_download(qualified_tickers, period="1mo", interval="30m")
-        if need_60m:
-            print("⏳ 載入 60m K 線數據...")
-            full_df_60m = safe_batch_download(qualified_tickers, period="1mo", interval="60m")
-        if need_weekly:
-            print("⏳ 載入 Weekly K 線數據...")
-            full_df_weekly = safe_batch_download(qualified_tickers, period="1y", interval="1wk")
+        print("⏳ 步驟 2: 下載 30m, 60m, Weekly 多週期 K 線...")
+        full_df_30m = safe_batch_download(qualified_tickers, period="1mo", interval="30m")
+        full_df_60m = safe_batch_download(qualified_tickers, period="1mo", interval="60m")
+        full_df_weekly = safe_batch_download(qualified_tickers, period="1y", interval="1wk")
 
-        print("⏳ 執行策略運算...")
+        print("⏳ 步驟 3: 執行全策略運算 (策略 1~7)...")
         for ticker in qualified_tickers:
             try:
                 df_d = full_df_daily.xs(ticker, axis=1, level=1) if len(qualified_tickers) > 1 else full_df_daily
-                df_m30 = full_df_30m.xs(ticker, axis=1, level=1) if need_30m and not full_df_30m.empty else pd.DataFrame()
-                df_m60 = full_df_60m.xs(ticker, axis=1, level=1) if need_60m and not full_df_60m.empty else pd.DataFrame()
-                df_w = full_df_weekly.xs(ticker, axis=1, level=1) if need_weekly and not full_df_weekly.empty else pd.DataFrame()
+                df_m30 = full_df_30m.xs(ticker, axis=1, level=1) if not full_df_30m.empty else pd.DataFrame()
+                df_m60 = full_df_60m.xs(ticker, axis=1, level=1) if not full_df_60m.empty else pd.DataFrame()
+                df_w = full_df_weekly.xs(ticker, axis=1, level=1) if not full_df_weekly.empty else pd.DataFrame()
 
                 name_zh = DYNAMIC_STOCK_NAMES.get(ticker, "")
                 stock_label = f"<code>{ticker}</code>(<i>{name_zh}</i>)" if name_zh else f"<code>{ticker}</code>"
 
                 # 策略一
-                if run_target in ["all", "strategy_1"] and not df_m30.empty and not df_m60.empty:
+                if not df_m30.empty and not df_m60.empty:
                     if check_macd_up_and_kd_gold(df_m30) and check_macd_up_and_kd_gold(df_m60):
                         strat1_matches.append(stock_label)
                         tech_candidates_union.add(ticker)
 
                 # 策略二
-                if run_target in ["all", "strategy_2"] and not df_m60.empty and not df_d.empty:
+                if not df_m60.empty and not df_d.empty:
                     if check_macd_up_and_kd_gold(df_m60) and check_macd_up_and_kd_gold(df_d):
                         strat2_matches.append(stock_label)
                         tech_candidates_union.add(ticker)
 
                 # 策略三
-                if run_target in ["all", "strategy_3"] and not df_d.empty and not df_w.empty:
+                if not df_d.empty and not df_w.empty:
                     if check_macd_up_and_kd_gold(df_d) and check_macd_up_and_kd_gold(df_w):
                         strat3_matches.append(stock_label)
                         tech_candidates_union.add(ticker)
 
                 # 策略四
-                if run_target in ["all", "strategy_4"] and not df_d.empty:
+                if not df_d.empty:
                     v_break = check_volume_breakout(df_d)
                     if v_break:
                         strat4_matches.append(f"{stock_label}[量比:{v_break[1]:.1f}倍]")
                         tech_candidates_union.add(ticker)
 
                 # 策略五
-                if run_target in ["all", "strategy_5"] and not df_d.empty:
+                if not df_d.empty:
                     if check_extreme_drop_volume_up(df_d):
                         strat5_matches.append(stock_label)
                         tech_candidates_union.add(ticker)
 
                 # 策略六
-                if run_target in ["all", "strategy_6"] and not df_m60.empty and not df_d.empty and not df_w.empty:
+                if not df_m60.empty and not df_d.empty and not df_w.empty:
                     if check_multi_timeframe_tangling(df_m60, df_d, df_w):
                         strat6_matches.append(stock_label)
                         tech_candidates_union.add(ticker)
 
                 # 策略七
-                if run_target in ["all", "strategy_7"] and not df_d.empty:
+                if not df_d.empty:
                     low_vol = check_low_position_volume_surge(df_d)
                     if low_vol:
                         strat7_matches.append(f"{stock_label}[位階:{low_vol[1]}%|量比:{low_vol[2]}倍]")
@@ -352,8 +328,8 @@ if __name__ == "__main__":
                 continue
 
     # 策略八
-    if run_target in ["all", "strategy_8"] and tech_candidates_union:
-        print(f"⏳ 執行【策略八】(針對 {len(tech_candidates_union)} 檔標的檢測)...")
+    if tech_candidates_union:
+        print(f"⏳ 步驟 4: 執行【策略八】(針對 {len(tech_candidates_union)} 檔技術標的檢測)...")
         for ticker in sorted(tech_candidates_union):
             is_mom_pass, mom_val = check_revenue_mom_growth(ticker)
             if is_mom_pass:
@@ -362,25 +338,16 @@ if __name__ == "__main__":
                 strat8_matches.append(label)
 
     # 📝 建構 Telegram 報告訊息
-    hk_msg = f"🇭🇰 <b>【港股盤後策略選股報告】</b>\n"
+    hk_msg = f"🇭🇰 <b>【港股盤後全策略選股報告】</b>\n"
     hk_msg += f"⏰ 時間: {hk_time_str}\n───────────────────\n\n"
-
-    if run_target in ["all", "strategy_1"]:
-        hk_msg += "📈 <b>【策略一】30分K & 60分K 共振</b>\n↳ " + (", ".join(strat1_matches) if strat1_matches else "今日無符合標的。 💤") + "\n\n"
-    if run_target in ["all", "strategy_2"]:
-        hk_msg += "📈 <b>【策略二】60分K & 日K 共振</b>\n↳ " + (", ".join(strat2_matches) if strat2_matches else "今日無符合標的。 💤") + "\n\n"
-    if run_target in ["all", "strategy_3"]:
-        hk_msg += "📈 <b>【策略三】日K & 週K 共振</b>\n↳ " + (", ".join(strat3_matches) if strat3_matches else "今日無符合標的。 💤") + "\n\n"
-    if run_target in ["all", "strategy_4"]:
-        hk_msg += "⚡ <b>【策略四】帶量突破</b>\n↳ " + (", ".join(strat4_matches) if strat4_matches else "今日無符合標的。 💤") + "\n\n"
-    if run_target in ["all", "strategy_5"]:
-        hk_msg += "🔥 <b>【策略五】恐慌止跌 (極限超賣爆量)</b>\n↳ " + (", ".join(strat5_matches) if strat5_matches else "今日無符合標的。 💤") + "\n\n"
-    if run_target in ["all", "strategy_6"]:
-        hk_msg += "💎 <b>【策略六】全週期同步糾結</b>\n↳ " + (", ".join(strat6_matches) if strat6_matches else "今日無符合標的。 💤") + "\n\n"
-    if run_target in ["all", "strategy_7"]:
-        hk_msg += "💥 <b>【策略七】低檔爆量股</b>\n↳ " + (", ".join(strat7_matches) if strat7_matches else "今日無符合標的。 💤") + "\n\n"
-    if run_target in ["all", "strategy_8"]:
-        hk_msg += "🏆 <b>【策略八】技術精選 × 營收月增</b>\n↳ " + (", ".join(strat8_matches) if strat8_matches else "無符合營收月增之標的。 💤") + "\n"
+    hk_msg += "📈 <b>【策略一】30分K & 60分K 共振</b>\n↳ " + (", ".join(strat1_matches) if strat1_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "📈 <b>【策略二】60分K & 日K 共振</b>\n↳ " + (", ".join(strat2_matches) if strat2_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "📈 <b>【策略三】日K & 週K 共振</b>\n↳ " + (", ".join(strat3_matches) if strat3_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "⚡ <b>【策略四】帶量突破</b>\n↳ " + (", ".join(strat4_matches) if strat4_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "🔥 <b>【策略五】恐慌止跌 (極限超賣爆量)</b>\n↳ " + (", ".join(strat5_matches) if strat5_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "💎 <b>【策略六】全週期同步糾結</b>\n↳ " + (", ".join(strat6_matches) if strat6_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "💥 <b>【策略七】低檔爆量股</b>\n↳ " + (", ".join(strat7_matches) if strat7_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "🏆 <b>【策略八】技術精選 × 營收月增</b>\n↳ " + (", ".join(strat8_matches) if strat8_matches else "無符合營收月增之標的。 💤") + "\n"
 
     send_telegram_message(hk_msg)
-    print("✅ 策略選股報告發送完畢！")
+    print("✅ 全策略選股報告發送完畢！")
