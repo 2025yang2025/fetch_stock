@@ -7,10 +7,10 @@ import pandas as pd
 import yfinance as yf
 
 # ==========================================
-# ⚙️ 設定檔
+# ⚙️ 設定檔 (同時支援兩種環境變數名稱，避免抓不到)
 # ==========================================
-TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN") or "YOUR_TELEGRAM_BOT_TOKEN"
+TG_CHAT_ID = os.environ.get("TG_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID") or "YOUR_TELEGRAM_CHAT_ID"
 
 # ==========================================
 # 📱 Telegram 推送模組
