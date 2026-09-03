@@ -60,13 +60,14 @@ def fetch_hk_shortlist_auto():
     print("🌐 正在抓取港股流動性數據並建立中文名稱字典...")
     shortlist = []
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": "https://vip.stock.finance.sina.com.cn/"
     }
-    for page in range(1, 8):
+    for page in range(1, 10):
         url = f"https://vip.stock.finance.sina.com.cn/hq/api/jsonp.php/IO.XSRV2.CallbackList['hk']/HK_Service.getMainMethodPageList?page={page}&num=80&sort=amount&asc=0"
         try:
             response = requests.get(url, headers=headers, timeout=5)
+            response.encoding = 'gbk'  # 強制設定為 GBK 編碼以正確解析新浪返回的中文字串
             text = response.text
             left_idx, right_idx = text.find("["), text.rfind("]")
             if left_idx != -1 and right_idx != -1:
@@ -77,11 +78,17 @@ def fetch_hk_shortlist_auto():
                     pure_code = raw_code[-4:] if len(raw_code) == 5 else raw_code
                     if not pure_code.isdigit(): continue
                     ticker = f"{int(pure_code):04d}.HK"
-                    DYNAMIC_STOCK_NAMES[ticker] = row.get('name', '未知')
+                    
+                    # 抓取中文名稱
+                    name = row.get('name', '').strip()
+                    if name:
+                        DYNAMIC_STOCK_NAMES[ticker] = name
+
                     trade, turnover = float(row.get('trade', 0)), float(row.get('amount', 0))
-                    if trade >= 1.0 and turnover >= 8000000:
+                    if trade >= 0.1 and turnover >= 5000000:
                         shortlist.append(ticker)
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ 解析新浪數據時出錯 (page {page}): {e}")
             continue
             
     shortlist = sorted(list(set(shortlist)))
@@ -90,6 +97,15 @@ def fetch_hk_shortlist_auto():
 # 🏷️ 建立包含名稱與價格的顯示標籤
 def format_stock_label(ticker, df_daily, extra_info=""):
     name_zh = DYNAMIC_STOCK_NAMES.get(ticker, "")
+    
+    # 備援機制：如果新浪沒抓到名稱，嘗試從 yfinance 獲取簡稱
+    if not name_zh or name_zh == "未知":
+        try:
+            t = yf.Ticker(ticker)
+            name_zh = t.info.get('shortName') or t.info.get('longName') or ""
+        except Exception:
+            name_zh = ""
+
     price_str = ""
     try:
         if not df_daily.empty:
@@ -101,7 +117,7 @@ def format_stock_label(ticker, df_daily, extra_info=""):
     except Exception:
         pass
 
-    name_part = f"({name_zh})" if name_zh and name_zh != "未知" else ""
+    name_part = f"({name_zh})" if name_zh else ""
     info_part = f"[{extra_info}]" if extra_info else ""
     
     return f"<code>{ticker}</code>{name_part}{price_str}{info_part}"
