@@ -7,7 +7,7 @@ import pandas as pd
 import yfinance as yf
 
 # ==========================================
-# ⚙️ 設定檔 (同時支援兩種環境變數名稱，避免抓不到)
+# ⚙️ 設定檔 (支援多種環境變數名稱，避免讀取失敗)
 # ==========================================
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN") or "YOUR_TELEGRAM_BOT_TOKEN"
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID") or "YOUR_TELEGRAM_CHAT_ID"
@@ -52,7 +52,7 @@ def send_telegram_message(message, max_length=3500):
         time.sleep(0.5)
 
 # ==========================================
-# ⚡ 1. 全港股股票池抓取
+# ⚡ 1. 全港股股票池抓取 & 字典建立
 # ==========================================
 DYNAMIC_STOCK_NAMES = {}
 
@@ -87,8 +87,27 @@ def fetch_hk_shortlist_auto():
     shortlist = sorted(list(set(shortlist)))
     return shortlist if shortlist else [f"{c:04d}.HK" for c in [1, 5, 388, 700, 941, 1211, 1810, 2015, 2318, 3690, 9618, 9988]]
 
+# 🏷️ 建立包含名稱與價格的顯示標籤
+def format_stock_label(ticker, df_daily, extra_info=""):
+    name_zh = DYNAMIC_STOCK_NAMES.get(ticker, "")
+    price_str = ""
+    try:
+        if not df_daily.empty:
+            close_series = df_daily['Close'].squeeze().astype(float)
+            if not close_series.empty:
+                last_price = close_series.iloc[-1]
+                # 若價格小於 2 元顯示三位小數，其餘顯示兩位小數
+                price_str = f" HK${last_price:.3f}" if last_price < 2.0 else f" HK${last_price:.2f}"
+    except Exception:
+        pass
+
+    name_part = f"({name_zh})" if name_zh and name_zh != "未知" else ""
+    info_part = f"[{extra_info}]" if extra_info else ""
+    
+    return f"<code>{ticker}</code>{name_part}{price_str}{info_part}"
+
 # ==========================================
-# 📊 2. 營收月增檢測
+# 📊 2. 營收月增檢測模組
 # ==========================================
 def check_revenue_mom_growth(ticker):
     try:
@@ -232,7 +251,7 @@ def safe_batch_download(tickers, period, interval, chunk_size=80):
     return pd.concat(all_dfs, axis=1) if all_dfs else pd.DataFrame()
 
 # ==========================================
-# 🚀 5. 主程式流程 (全策略執行)
+# 🚀 5. 主程式流程
 # ==========================================
 if __name__ == "__main__":
     now_hk = pd.Timestamp.now(tz='UTC').tz_convert('Asia/Hong_Kong')
@@ -277,51 +296,48 @@ if __name__ == "__main__":
                 df_m60 = full_df_60m.xs(ticker, axis=1, level=1) if not full_df_60m.empty else pd.DataFrame()
                 df_w = full_df_weekly.xs(ticker, axis=1, level=1) if not full_df_weekly.empty else pd.DataFrame()
 
-                name_zh = DYNAMIC_STOCK_NAMES.get(ticker, "")
-                stock_label = f"<code>{ticker}</code>(<i>{name_zh}</i>)" if name_zh else f"<code>{ticker}</code>"
-
                 # 策略一
                 if not df_m30.empty and not df_m60.empty:
                     if check_macd_up_and_kd_gold(df_m30) and check_macd_up_and_kd_gold(df_m60):
-                        strat1_matches.append(stock_label)
+                        strat1_matches.append(format_stock_label(ticker, df_d))
                         tech_candidates_union.add(ticker)
 
                 # 策略二
                 if not df_m60.empty and not df_d.empty:
                     if check_macd_up_and_kd_gold(df_m60) and check_macd_up_and_kd_gold(df_d):
-                        strat2_matches.append(stock_label)
+                        strat2_matches.append(format_stock_label(ticker, df_d))
                         tech_candidates_union.add(ticker)
 
                 # 策略三
                 if not df_d.empty and not df_w.empty:
                     if check_macd_up_and_kd_gold(df_d) and check_macd_up_and_kd_gold(df_w):
-                        strat3_matches.append(stock_label)
+                        strat3_matches.append(format_stock_label(ticker, df_d))
                         tech_candidates_union.add(ticker)
 
                 # 策略四
                 if not df_d.empty:
                     v_break = check_volume_breakout(df_d)
                     if v_break:
-                        strat4_matches.append(f"{stock_label}[量比:{v_break[1]:.1f}倍]")
+                        strat4_matches.append(format_stock_label(ticker, df_d, extra_info=f"量比:{v_break[1]:.1f}倍"))
                         tech_candidates_union.add(ticker)
 
                 # 策略五
                 if not df_d.empty:
                     if check_extreme_drop_volume_up(df_d):
-                        strat5_matches.append(stock_label)
+                        strat5_matches.append(format_stock_label(ticker, df_d))
                         tech_candidates_union.add(ticker)
 
                 # 策略六
                 if not df_m60.empty and not df_d.empty and not df_w.empty:
                     if check_multi_timeframe_tangling(df_m60, df_d, df_w):
-                        strat6_matches.append(stock_label)
+                        strat6_matches.append(format_stock_label(ticker, df_d))
                         tech_candidates_union.add(ticker)
 
                 # 策略七
                 if not df_d.empty:
                     low_vol = check_low_position_volume_surge(df_d)
                     if low_vol:
-                        strat7_matches.append(f"{stock_label}[位階:{low_vol[1]}%|量比:{low_vol[2]}倍]")
+                        strat7_matches.append(format_stock_label(ticker, df_d, extra_info=f"位階:{low_vol[1]}%|量比:{low_vol[2]}倍"))
                         tech_candidates_union.add(ticker)
 
             except Exception:
@@ -333,21 +349,20 @@ if __name__ == "__main__":
         for ticker in sorted(tech_candidates_union):
             is_mom_pass, mom_val = check_revenue_mom_growth(ticker)
             if is_mom_pass:
-                name_zh = DYNAMIC_STOCK_NAMES.get(ticker, "")
-                label = f"<code>{ticker}</code>(<i>{name_zh}</i>)[月增:{mom_val}%]" if name_zh else f"<code>{ticker}</code>[月增:{mom_val}%]"
-                strat8_matches.append(label)
+                df_d = full_df_daily.xs(ticker, axis=1, level=1) if len(qualified_tickers) > 1 else full_df_daily
+                strat8_matches.append(format_stock_label(ticker, df_d, extra_info=f"月增:{mom_val}%"))
 
     # 📝 建構 Telegram 報告訊息
     hk_msg = f"🇭🇰 <b>【港股盤後全策略選股報告】</b>\n"
     hk_msg += f"⏰ 時間: {hk_time_str}\n───────────────────\n\n"
-    hk_msg += "📈 <b>【策略一】30分K & 60分K 共振</b>\n↳ " + (", ".join(strat1_matches) if strat1_matches else "今日無符合標的。 💤") + "\n\n"
-    hk_msg += "📈 <b>【策略二】60分K & 日K 共振</b>\n↳ " + (", ".join(strat2_matches) if strat2_matches else "今日無符合標的。 💤") + "\n\n"
-    hk_msg += "📈 <b>【策略三】日K & 週K 共振</b>\n↳ " + (", ".join(strat3_matches) if strat3_matches else "今日無符合標的。 💤") + "\n\n"
-    hk_msg += "⚡ <b>【策略四】帶量突破</b>\n↳ " + (", ".join(strat4_matches) if strat4_matches else "今日無符合標的。 💤") + "\n\n"
-    hk_msg += "🔥 <b>【策略五】恐慌止跌 (極限超賣爆量)</b>\n↳ " + (", ".join(strat5_matches) if strat5_matches else "今日無符合標的。 💤") + "\n\n"
-    hk_msg += "💎 <b>【策略六】全週期同步糾結</b>\n↳ " + (", ".join(strat6_matches) if strat6_matches else "今日無符合標的。 💤") + "\n\n"
-    hk_msg += "💥 <b>【策略七】低檔爆量股</b>\n↳ " + (", ".join(strat7_matches) if strat7_matches else "今日無符合標的。 💤") + "\n\n"
-    hk_msg += "🏆 <b>【策略八】技術精選 × 營收月增</b>\n↳ " + (", ".join(strat8_matches) if strat8_matches else "無符合營收月增之標的。 💤") + "\n"
+    hk_msg += "📈 <b>【策略一】30分K & 60分K 共振</b>\n↳ " + ("\n↳ ".join(strat1_matches) if strat1_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "📈 <b>【策略二】60分K & 日K 共振</b>\n↳ " + ("\n↳ ".join(strat2_matches) if strat2_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "📈 <b>【策略三】日K & 週K 共振</b>\n↳ " + ("\n↳ ".join(strat3_matches) if strat3_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "⚡ <b>【策略四】帶量突破</b>\n↳ " + ("\n↳ ".join(strat4_matches) if strat4_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "🔥 <b>【策略五】恐慌止跌 (極限超賣爆量)</b>\n↳ " + ("\n↳ ".join(strat5_matches) if strat5_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "💎 <b>【策略六】全週期同步糾結</b>\n↳ " + ("\n↳ ".join(strat6_matches) if strat6_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "💥 <b>【策略七】低檔爆量股</b>\n↳ " + ("\n↳ ".join(strat7_matches) if strat7_matches else "今日無符合標的。 💤") + "\n\n"
+    hk_msg += "🏆 <b>【策略八】技術精選 × 營收月增</b>\n↳ " + ("\n↳ ".join(strat8_matches) if strat8_matches else "無符合營收月增之標的。 💤") + "\n"
 
     send_telegram_message(hk_msg)
     print("✅ 全策略選股報告發送完畢！")
